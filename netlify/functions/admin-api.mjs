@@ -37,9 +37,7 @@ const json = (statusCode, body, headers = {}) => ({
 const corsHeaders = (event) => {
   const origin = event.headers?.origin;
   const allowedOrigin =
-    origin && ALLOWED_ORIGINS.includes(origin)
-      ? origin
-      : ALLOWED_ORIGINS[0] ?? origin ?? "";
+    origin && isAllowedOrigin(origin) ? origin : "";
 
   return {
     ...(allowedOrigin ? { "access-control-allow-origin": allowedOrigin } : {}),
@@ -48,6 +46,13 @@ const corsHeaders = (event) => {
     "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
     vary: "Origin",
   };
+};
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  if (ALLOWED_ORIGINS.length > 0) return false;
+  return /^http:\/\/(localhost|127\.0\.0\.1):(4173|8888)$/.test(origin);
 };
 
 const assertServerConfiguration = () => {
@@ -745,6 +750,13 @@ const handleRequest = async (event) => {
 };
 
 export const handler = async (event) => {
+  const origin = event.headers?.origin;
+  if (origin && !isAllowedOrigin(origin)) {
+    return json(403, {
+      ok: false,
+      error: "Domena wywołująca API nie jest dozwolona.",
+    });
+  }
   const cors = corsHeaders(event);
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: cors, body: "" };
@@ -781,4 +793,3 @@ export const handler = async (event) => {
     );
   }
 };
-
