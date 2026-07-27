@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.env.local
+.netlify
+.DS_Store
+coverage
+*.log
+supabase/.temp
+

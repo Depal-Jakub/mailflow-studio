@@ -1,0 +1,13 @@
+project_id = "mailflow-studio"
+
+[functions.ingest-message]
+verify_jwt = false
+
+[functions.process-message]
+verify_jwt = false
+
+[functions.scrape-worker]
+verify_jwt = false
+
+[functions.action-worker]
+verify_jwt = false
