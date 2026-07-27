@@ -1,0 +1,296 @@
+{
+  "info": {
+    "_postman_id": "b1dce764-6f07-49ec-a111-mailflowstudio",
+    "name": "MailFlow Studio Public API v1",
+    "description": "Gotowa kolekcja dla organizacyjnych kluczy API. Ustaw `baseUrl` i `apiKey` w zmiennych kolekcji.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{apiKey}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8888/v1",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "mfs_live_REPLACE_ME",
+      "type": "string"
+    },
+    {
+      "key": "messageId",
+      "value": "00000000-0000-4000-8000-000000000000",
+      "type": "string"
+    },
+    {
+      "key": "categoryId",
+      "value": "00000000-0000-4000-8000-000000000000",
+      "type": "string"
+    },
+    {
+      "key": "sourceId",
+      "value": "00000000-0000-4000-8000-000000000000",
+      "type": "string"
+    },
+    {
+      "key": "outboundId",
+      "value": "00000000-0000-4000-8000-000000000000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "System",
+      "item": [
+        {
+          "name": "Health",
+          "auth": {
+            "type": "noauth"
+          },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health",
+            "description": "Publiczny endpoint gotowości API."
+          }
+        },
+        {
+          "name": "Current API identity",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/me"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Messages",
+      "item": [
+        {
+          "name": "List messages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/messages?limit=25",
+              "host": ["{{baseUrl}}"],
+              "path": ["messages"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "25"
+                },
+                {
+                  "key": "status",
+                  "value": "review",
+                  "disabled": true
+                },
+                {
+                  "key": "cursor",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Ingest message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "crm-{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sender_email\": \"client@example.com\",\n  \"sender_name\": \"Example Client\",\n  \"recipients\": [{ \"email\": \"sales@example.com\" }],\n  \"subject\": \"Request from CRM\",\n  \"body_text\": \"Please contact me about the enterprise plan.\",\n  \"tags\": [\"crm\", \"lead\"]\n}"
+            },
+            "url": "{{baseUrl}}/messages"
+          }
+        },
+        {
+          "name": "Get message",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/messages/{{messageId}}"
+          }
+        },
+        {
+          "name": "Update classification",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"classified\",\n  \"category_id\": \"{{categoryId}}\",\n  \"score\": 92,\n  \"tags\": [\"api-reviewed\"]\n}"
+            },
+            "url": "{{baseUrl}}/messages/{{messageId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Categories",
+      "item": [
+        {
+          "name": "List categories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/categories"
+          }
+        },
+        {
+          "name": "Create category",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Enterprise leads\",\n  \"description\": \"High-value inbound opportunities\",\n  \"color\": \"#08736f\",\n  \"default_score\": 75\n}"
+            },
+            "url": "{{baseUrl}}/categories"
+          }
+        },
+        {
+          "name": "Update category",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"default_score\": 80\n}"
+            },
+            "url": "{{baseUrl}}/categories/{{categoryId}}"
+          }
+        },
+        {
+          "name": "Delete category",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/categories/{{categoryId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sources",
+      "item": [
+        {
+          "name": "List sources",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/sources"
+          }
+        },
+        {
+          "name": "Schedule source sync",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/sources/{{sourceId}}/sync"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Templates",
+      "item": [
+        {
+          "name": "List templates",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/templates"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Outbound",
+      "item": [
+        {
+          "name": "List outbound messages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/outbound-messages?limit=25"
+          }
+        },
+        {
+          "name": "Create draft",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject\": \"MailFlow Studio API test\",\n  \"text_body\": \"This is a draft created through the API.\",\n  \"status\": \"draft\",\n  \"recipients\": [\n    { \"email\": \"recipient@example.com\", \"name\": \"Example\" }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/outbound-messages"
+          }
+        },
+        {
+          "name": "Get outbound message",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/outbound-messages/{{outboundId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audit",
+      "item": [
+        {
+          "name": "List audit events",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/audit?limit=50"
+          }
+        }
+      ]
+    }
+  ]
+}

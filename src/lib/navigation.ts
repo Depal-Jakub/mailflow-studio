@@ -7,6 +7,7 @@ import {
   FolderKanban,
   Gauge,
   History,
+  KeyRound,
   Mail,
   Send,
   Settings,
@@ -77,6 +78,12 @@ export const navigationItems = [
     description: "Pełny audyt",
   },
   {
+    label: "API dla deweloperów",
+    path: "/developers",
+    icon: KeyRound,
+    description: "Klucze i integracje",
+  },
+  {
     label: "Ustawienia",
     path: "/settings",
     icon: Settings,
@@ -89,4 +96,3 @@ export const pageMetadata = new Map(
 );
 
 export const healthIcon = Activity;
-

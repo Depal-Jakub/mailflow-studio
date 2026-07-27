@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Activity,
   BarChart3,
@@ -6,7 +6,7 @@ import {
   Download,
   Gauge,
   MailCheck,
-  TimerReset,
+  Send,
   TrendingUp,
 } from "lucide-react";
 import {
@@ -27,24 +27,62 @@ import {
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { PageHeader } from "../components/ui/PageHeader";
-import { categories, volumeData } from "../data/demo";
-import { formatNumber } from "../lib/format";
+import { formatNumber, formatPercent } from "../lib/format";
+import { useOperationalReport } from "../lib/reports";
 
-const sourcePerformance = [
-  { source: "Gmail Support", processed: 8542, errors: 32, review: 384 },
-  { source: "Outlook Sales", processed: 6231, errors: 18, review: 217 },
-  { source: "Info Contact", processed: 3187, errors: 41, review: 298 },
-  { source: "Web scraper", processed: 1942, errors: 12, review: 89 },
-];
-
-const qualityTrend = volumeData.map((item, index) => ({
-  day: item.day,
-  precision: 84 + ((index * 7) % 11) + index * 0.22,
-  automation: 77 + ((index * 5) % 12) + index * 0.26,
-}));
+const percentage = (part: number, total: number) =>
+  total > 0 ? (part / total) * 100 : 0;
 
 export function ReportsPage() {
   const [range, setRange] = useState("14");
+  const { report, loading } = useOperationalReport(Number(range));
+
+  const qualityTrend = useMemo(
+    () =>
+      report.daily.map((item) => ({
+        day: new Intl.DateTimeFormat("pl-PL", {
+          day: "2-digit",
+          month: "2-digit",
+        }).format(new Date(`${item.day}T12:00:00Z`)),
+        precision: percentage(
+          Math.max(0, item.processed - item.review - item.failed),
+          item.processed,
+        ),
+        automation: percentage(item.automated, item.incoming),
+      })),
+    [report.daily],
+  );
+  const classificationPrecision = percentage(
+    Math.max(
+      0,
+      report.messages.classified -
+        report.messages.review -
+        report.messages.failed,
+    ),
+    report.messages.classified,
+  );
+  const automationRate = percentage(
+    report.messages.automated,
+    report.messages.incoming,
+  );
+  const deliveryRate = percentage(
+    report.outbound.delivered,
+    report.outbound.recipients,
+  );
+
+  const exportReport = () => {
+    const blob = new Blob([JSON.stringify(report, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `mailflow-report-${report.range.days}d-${new Date()
+      .toISOString()
+      .slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <>
@@ -61,10 +99,16 @@ export function ReportsPage() {
               <option value="30">Ostatnie 30 dni</option>
               <option value="90">Ostatnie 90 dni</option>
             </select>
-            <Button icon={Download}>Eksportuj raport</Button>
+            <Button
+              disabled={loading}
+              icon={Download}
+              onClick={exportReport}
+            >
+              Eksportuj JSON
+            </Button>
           </>
         }
-        description="Jakość klasyfikacji, wydajność automatyzacji i kondycja kanałów."
+        description="Agregaty obliczane w bazie bez limitu liczby zwracanych rekordów."
         title="Raporty"
       />
 
@@ -75,8 +119,8 @@ export function ReportsPage() {
           </span>
           <div>
             <span>Przetworzone wiadomości</span>
-            <strong>19 902</strong>
-            <small className="trend trend--up">+14,8% vs poprzedni okres</small>
+            <strong>{formatNumber(report.messages.classified)}</strong>
+            <small>{formatNumber(report.messages.total)} w okresie</small>
           </div>
         </article>
         <article className="metric-tile">
@@ -84,9 +128,11 @@ export function ReportsPage() {
             <Gauge size={21} />
           </span>
           <div>
-            <span>Precyzja klasyfikacji</span>
-            <strong>92,7%</strong>
-            <small className="trend trend--up">+3,1 pp po korektach</small>
+            <span>Bez ręcznej korekty</span>
+            <strong>{formatPercent(classificationPrecision)}%</strong>
+            <small>
+              {formatNumber(report.messages.review)} do weryfikacji
+            </small>
           </div>
         </article>
         <article className="metric-tile">
@@ -95,18 +141,23 @@ export function ReportsPage() {
           </span>
           <div>
             <span>Automatyzowane bez udziału</span>
-            <strong>81,9%</strong>
-            <small className="trend trend--up">+6,4 pp w 30 dni</small>
+            <strong>{formatPercent(automationRate)}%</strong>
+            <small>
+              {formatNumber(report.messages.automated)} wiadomości
+            </small>
           </div>
         </article>
         <article className="metric-tile">
           <span className="metric-tile__icon metric-tile__icon--amber">
-            <TimerReset size={21} />
+            <Send size={21} />
           </span>
           <div>
-            <span>Średni czas obsługi</span>
-            <strong>3m 42s</strong>
-            <small className="trend trend--up">-38 s szybciej</small>
+            <span>Skuteczność dostarczeń</span>
+            <strong>{formatPercent(deliveryRate)}%</strong>
+            <small>
+              {formatNumber(report.outbound.delivered)} z{" "}
+              {formatNumber(report.outbound.recipients)}
+            </small>
           </div>
         </article>
       </section>
@@ -116,10 +167,11 @@ export function ReportsPage() {
           <div className="panel__header">
             <div>
               <h2>Jakość klasyfikacji i automatyzacji</h2>
-              <p>Odsetek poprawnych dopasowań oraz obsługi bez udziału człowieka.</p>
+              <p>Dzienny udział spraw zakończonych bez ręcznej obsługi.</p>
             </div>
-            <Badge tone="success">
-              <TrendingUp size={13} /> trend rosnący
+            <Badge tone={loading ? "warning" : "success"}>
+              <TrendingUp size={13} />
+              {loading ? "odświeżanie" : "dane aktualne"}
             </Badge>
           </div>
           <ResponsiveContainer height={300} width="100%">
@@ -135,10 +187,15 @@ export function ReportsPage() {
                 </linearGradient>
               </defs>
               <CartesianGrid stroke="#e7edf2" strokeDasharray="3 3" />
-              <XAxis axisLine={false} dataKey="day" fontSize={11} tickLine={false} />
+              <XAxis
+                axisLine={false}
+                dataKey="day"
+                fontSize={11}
+                tickLine={false}
+              />
               <YAxis
                 axisLine={false}
-                domain={[70, 100]}
+                domain={[0, 100]}
                 fontSize={11}
                 tickFormatter={(value) => `${value}%`}
                 tickLine={false}
@@ -151,7 +208,7 @@ export function ReportsPage() {
               <Area
                 dataKey="precision"
                 fill="url(#precisionFill)"
-                name="Precyzja klasyfikacji"
+                name="Bez ręcznej korekty"
                 stroke="#109f97"
                 strokeWidth={2}
                 type="monotone"
@@ -172,21 +229,21 @@ export function ReportsPage() {
           <div className="panel__header">
             <div>
               <h2>Rozkład kategorii</h2>
-              <p>Całkowity udział w bazie.</p>
+              <p>Wiadomości w wybranym okresie.</p>
             </div>
           </div>
           <div className="report-donut">
             <ResponsiveContainer height={230} width="55%">
               <PieChart>
                 <Pie
-                  data={categories}
-                  dataKey="messageCount"
+                  data={report.categories}
+                  dataKey="count"
                   innerRadius={58}
                   outerRadius={86}
                   paddingAngle={2}
                   strokeWidth={0}
                 >
-                  {categories.map((category) => (
+                  {report.categories.map((category) => (
                     <Cell fill={category.color} key={category.id} />
                   ))}
                 </Pie>
@@ -197,11 +254,11 @@ export function ReportsPage() {
               </PieChart>
             </ResponsiveContainer>
             <div className="report-donut__legend">
-              {categories.map((category) => (
+              {report.categories.slice(0, 7).map((category) => (
                 <div key={category.id}>
                   <i style={{ backgroundColor: category.color }} />
                   <span>{category.name}</span>
-                  <strong>{formatNumber(category.messageCount)}</strong>
+                  <strong>{formatNumber(category.count)}</strong>
                 </div>
               ))}
             </div>
@@ -216,18 +273,25 @@ export function ReportsPage() {
             </div>
           </div>
           <ResponsiveContainer height={280} width="100%">
-            <BarChart data={sourcePerformance} layout="vertical">
+            <BarChart data={report.sources} layout="vertical">
               <CartesianGrid horizontal={false} stroke="#e7edf2" />
-              <XAxis axisLine={false} fontSize={11} tickLine={false} type="number" />
+              <XAxis
+                axisLine={false}
+                fontSize={11}
+                tickLine={false}
+                type="number"
+              />
               <YAxis
                 axisLine={false}
-                dataKey="source"
+                dataKey="name"
                 fontSize={11}
                 tickLine={false}
                 type="category"
                 width={110}
               />
-              <Tooltip contentStyle={{ borderRadius: 6, borderColor: "#d9e2e9" }} />
+              <Tooltip
+                contentStyle={{ borderRadius: 6, borderColor: "#d9e2e9" }}
+              />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar
                 dataKey="processed"
@@ -236,7 +300,12 @@ export function ReportsPage() {
                 radius={[0, 3, 3, 0]}
                 stackId="a"
               />
-              <Bar dataKey="review" fill="#e5a326" name="Do przeglądu" stackId="a" />
+              <Bar
+                dataKey="review"
+                fill="#e5a326"
+                name="Do przeglądu"
+                stackId="a"
+              />
               <Bar
                 dataKey="errors"
                 fill="#ef5a4f"
@@ -251,38 +320,40 @@ export function ReportsPage() {
         <section className="panel quality-table-panel">
           <div className="panel__header">
             <div>
-              <h2>Najskuteczniejsze reguły</h2>
-              <p>Ocena jakości po ręcznych korektach.</p>
+              <h2>Najczęściej trafiające reguły</h2>
+              <p>Wynik oparty na zapisanej historii ocen silnika.</p>
             </div>
             <BarChart3 size={18} />
           </div>
           <div className="quality-list">
-            {[
-              ["Faktury do opłacenia", 98.8, 982],
-              ["Błędy dostarczeń (NDR)", 97.6, 421],
-              ["Zapytania ofertowe", 95.4, 756],
-              ["Pilne reklamacje", 93.9, 1248],
-              ["Wiadomości partnerskie", 91.2, 643],
-            ].map(([name, score, hits], index) => (
-              <div key={name as string}>
-                <span>{index + 1}</span>
-                <div>
-                  <strong>{name as string}</strong>
-                  <small>{formatNumber(hits as number)} trafień</small>
+            {report.rules.slice(0, 8).map((rule, index) => {
+              const rate = percentage(rule.matches, rule.evaluations);
+              return (
+                <div key={rule.id}>
+                  <span>{index + 1}</span>
+                  <div>
+                    <strong>{rule.name}</strong>
+                    <small>{formatNumber(rule.matches)} trafień</small>
+                  </div>
+                  <div className="quality-bar">
+                    <span>
+                      <i style={{ width: `${Math.min(rate, 100)}%` }} />
+                    </span>
+                    <strong>{formatPercent(rate)}%</strong>
+                  </div>
+                  <CheckCircle2 size={16} />
                 </div>
-                <div className="quality-bar">
-                  <span>
-                    <i style={{ width: `${score as number}%` }} />
-                  </span>
-                  <strong>{score as number}%</strong>
-                </div>
-                <CheckCircle2 size={16} />
+              );
+            })}
+            {report.rules.length === 0 ? (
+              <div className="empty-state">
+                <BarChart3 size={24} />
+                <strong>Brak ocen reguł w tym okresie</strong>
               </div>
-            ))}
+            ) : null}
           </div>
         </section>
       </div>
     </>
   );
 }
-

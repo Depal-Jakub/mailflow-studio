@@ -15,6 +15,19 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 - Zmiana tego klucza wymaga kontrolowanej migracji i ponownego zaszyfrowania
   istniejących sekretów.
 
+## Klucze publicznego API
+
+- Pełny klucz `mfs_live_...` jest generowany kryptograficznie i wyświetlany
+  tylko raz. Baza przechowuje wyłącznie SHA-256 oraz krótki prefiks.
+- Każdy klucz jest przypisany do jednej organizacji, ma zakresy, status, limit
+  na minutę, opcjonalne wygaśnięcie i allowlistę IP/CIDR.
+- Limit jest zużywany atomowo w PostgreSQL, więc nie da się go ominąć przez
+  równoległe instancje funkcji.
+- Rotacja i unieważnienie są audytowane. Klucza nie wolno przekazywać do
+  `VITE_*`, localStorage, adresu URL ani repozytorium.
+- Log wywołań zapisuje metodę, ścieżkę, status, czas, IP i `request_id`, ale
+  nie zapisuje nagłówka `Authorization` ani body.
+
 ## OAuth
 
 Refresh token nie ma gwarancji „nigdy nie wygasa”. Może zostać cofnięty przez
@@ -26,8 +39,10 @@ ponownym połączeniem konta.
 
 - Scraper pobiera wyłącznie hosty z `SCRAPER_ALLOWED_HOSTS` lub
   `source_connectors.public_config.allowed_hosts`.
-- Lokalne adresy i prywatne IPv4 są blokowane, odpowiedź ma limit 2 MB, a czas
-  żądania 12 sekund.
+- Lokalne adresy, prywatne IPv4 i prywatne IPv6 są blokowane przed pobraniem
+  oraz po rozwiązaniu DNS. Każde przekierowanie przechodzi tę samą kontrolę.
+  Odpowiedź ma limit 2 MB, czas żądania 12 sekund, a opcjonalne `robots.txt`
+  jest respektowane.
 - Webhooki wymagają HTTPS, listy `WEBHOOK_ALLOWED_HOSTS` i podpisu HMAC.
 - Endpoint ingest przyjmuje `WORKER_SECRET` albo podpis
   `x-mailflow-signature: sha256=...`.
@@ -39,3 +54,5 @@ ponownym połączeniem konta.
 - Ogranicz rejestrację użytkowników w Supabase do zaproszeń.
 - Monitoruj `audit_events`, błędy konektorów i martwe kolejki.
 - Regularnie aktualizuj zależności i wykonuj `npm audit`.
+- Uruchamiaj `npm run check:secrets` przed każdym pushem; skaner nie zastępuje
+  rotacji sekretu, który kiedykolwiek został ujawniony.

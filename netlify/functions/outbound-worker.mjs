@@ -75,7 +75,7 @@ const smtpTransport = (account, credentials) => {
   });
 };
 
-const sendWithHttpProvider = async (
+export const sendWithHttpProvider = async (
   account,
   credentials,
   recipient,
@@ -87,6 +87,8 @@ const sendWithHttpProvider = async (
       headers: {
         authorization: `Bearer ${credentials.apiKey ?? credentials.api_key}`,
         "content-type": "application/json",
+        "idempotency-key": `mailflow/${recipient.id}`,
+        "user-agent": "MailFlow-Studio/0.1",
       },
       body: JSON.stringify({
         from: `${account.from_name ?? account.name} <${account.from_email}>`,
@@ -109,6 +111,7 @@ const sendWithHttpProvider = async (
       headers: {
         authorization: `Bearer ${credentials.apiKey ?? credentials.api_key}`,
         "content-type": "application/json",
+        "user-agent": "MailFlow-Studio/0.1",
       },
       body: JSON.stringify({
         personalizations: [{ to: [{ email: recipient.email, name: recipient.name }] }],
@@ -130,6 +133,44 @@ const sendWithHttpProvider = async (
   }
 
   throw new Error(`HTTP provider ${account.provider} is not implemented`);
+};
+
+const sendWithSes = async (account, credentials, recipient, content) => {
+  const { SESv2Client, SendEmailCommand } = await import(
+    "@aws-sdk/client-sesv2"
+  );
+  const client = new SESv2Client({
+    region: credentials.region ?? account.public_config?.region,
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+    },
+  });
+  const result = await client.send(
+    new SendEmailCommand({
+      FromEmailAddress: `${account.from_name ?? account.name} <${account.from_email}>`,
+      ReplyToAddresses: account.reply_to ? [account.reply_to] : undefined,
+      Destination: { ToAddresses: [recipient.email] },
+      Content: {
+        Simple: {
+          Subject: { Data: content.subject, Charset: "UTF-8" },
+          Body: {
+            ...(content.text
+              ? { Text: { Data: content.text, Charset: "UTF-8" } }
+              : {}),
+            ...(content.html
+              ? { Html: { Data: content.html, Charset: "UTF-8" } }
+              : {}),
+          },
+        },
+      },
+      EmailTags: [
+        { Name: "mailflow_account", Value: String(account.id).slice(0, 256) },
+      ],
+    }),
+  );
+  client.destroy();
+  return { messageId: result.MessageId };
 };
 
 const loadRelations = async (service, recipients) => {
@@ -202,7 +243,7 @@ const sendRecipient = async (
     return sendWithHttpProvider(account, credentials, recipient, content);
   }
   if (account.provider === "ses") {
-    throw new Error("AWS SES requires a dedicated adapter configuration");
+    return sendWithSes(account, credentials, recipient, content);
   }
 
   let transport = transportCache.get(account.id);

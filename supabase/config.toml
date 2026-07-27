@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.action-worker]
 verify_jwt = false
+
+[functions.automation-worker]
+verify_jwt = false

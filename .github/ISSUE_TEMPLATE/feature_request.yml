@@ -1,0 +1,42 @@
+name: Propozycja funkcji
+description: Opisz potrzebę biznesową i oczekiwany przepływ.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem użytkownika
+      description: Jaki proces lub decyzję ma usprawnić ta funkcja?
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Oczekiwany przepływ
+      description: Opisz kolejne kroki użytkownika i rezultat.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Obszar
+      options:
+        - Wiadomości i klasyfikacja
+        - Źródła i scraping
+        - Reguły i automatyzacje
+        - Wysyłka
+        - Użytkownicy i role
+        - Raporty
+        - Publiczne API
+        - Inny
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Kryteria akceptacji
+      description: Po czym poznamy, że funkcja jest gotowa?
+    validations:
+      required: true

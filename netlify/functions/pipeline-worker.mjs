@@ -87,6 +87,7 @@ export const handler = async (event) => {
     for (const [name, batchSize] of [
       ["scrape-worker", 10],
       ["action-worker", 25],
+      ["automation-worker", 25],
     ]) {
       try {
         workers[name] = await invokeEdgeFunction(name, { batchSize });

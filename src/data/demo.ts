@@ -3,12 +3,78 @@ import type {
   Automation,
   AutomationRule,
   Category,
+  DeliveryAccount,
+  EmailTemplate,
   EmailMessage,
+  Organization,
+  OrganizationMembership,
   OutboundCampaign,
+  RoleDefinition,
   SourceConnector,
   SystemHealth,
   TeamUser,
 } from "../types";
+import { createBuiltInRoles } from "../lib/permissions";
+
+export const organizations: Organization[] = [
+  {
+    id: "org-acme",
+    name: "Acme Operations",
+    slug: "acme-operations",
+    initials: "AO",
+    timezone: "Europe/Warsaw",
+    locale: "pl-PL",
+    plan: "enterprise",
+    status: "active",
+    createdAt: "2026-01-12T09:00:00+01:00",
+  },
+  {
+    id: "org-north",
+    name: "North Studio",
+    slug: "north-studio",
+    initials: "NS",
+    timezone: "Europe/Warsaw",
+    locale: "pl-PL",
+    plan: "business",
+    status: "active",
+    createdAt: "2026-05-04T11:30:00+02:00",
+  },
+];
+
+export const roles: RoleDefinition[] = [
+  ...createBuiltInRoles("org-acme"),
+  ...createBuiltInRoles("org-north"),
+  {
+    id: "role-org-acme-sales-lead",
+    organizationId: "org-acme",
+    key: "sales_lead",
+    name: "Lider sprzedaży",
+    description:
+      "Pełna obsługa leadów i wysyłek bez dostępu do sekretów technicznych.",
+    color: "#0f9f96",
+    builtIn: false,
+    permissions: [
+      "dashboard.view",
+      "messages.view",
+      "messages.classify",
+      "messages.assign",
+      "messages.export",
+      "categories.view",
+      "rules.view",
+      "send.view",
+      "send.compose",
+      "send.approve",
+      "send.schedule",
+      "templates.view",
+      "templates.manage",
+      "users.view",
+      "reports.view",
+      "reports.export",
+      "audit.view",
+    ],
+    memberCount: 0,
+  },
+];
 
 export const categories: Category[] = [
   {
@@ -82,6 +148,7 @@ export const categories: Category[] = [
 export const sources: SourceConnector[] = [
   {
     id: "gmail-support",
+    organizationId: "org-acme",
     name: "Gmail Support",
     address: "support@acme.pl",
     type: "gmail",
@@ -92,9 +159,18 @@ export const sources: SourceConnector[] = [
     nextSyncSeconds: 102,
     folders: ["INBOX", "Sent", "Spam", "Support"],
     syncIntervalMinutes: 5,
+    publicConfig: {
+      initialLookbackDays: 30,
+      maxPerSync: 100,
+      includeSpamTrash: false,
+    },
+    credentialsConfigured: true,
+    lastTestAt: "2026-07-27T12:20:00+02:00",
+    lastError: null,
   },
   {
     id: "outlook-sales",
+    organizationId: "org-acme",
     name: "Outlook Sales",
     address: "sales@acme.pl",
     type: "outlook",
@@ -105,9 +181,18 @@ export const sources: SourceConnector[] = [
     nextSyncSeconds: 135,
     folders: ["Inbox", "Sent Items", "Leads"],
     syncIntervalMinutes: 5,
+    publicConfig: {
+      tenantId: "organizations",
+      initialLookbackDays: 30,
+      maxPerSync: 100,
+    },
+    credentialsConfigured: true,
+    lastTestAt: "2026-07-27T12:18:00+02:00",
+    lastError: null,
   },
   {
     id: "imap-contact",
+    organizationId: "org-acme",
     name: "Info Contact",
     address: "info@acme.pl",
     type: "imap",
@@ -118,9 +203,20 @@ export const sources: SourceConnector[] = [
     nextSyncSeconds: 58,
     folders: ["INBOX", "Sent", "Archive"],
     syncIntervalMinutes: 10,
+    publicConfig: {
+      host: "imap.example.com",
+      port: 993,
+      security: "tls",
+      initialLookbackDays: 14,
+      maxPerSync: 50,
+    },
+    credentialsConfigured: true,
+    lastTestAt: "2026-07-27T11:58:00+02:00",
+    lastError: "Ostatnia synchronizacja przekroczyła 20 sekund.",
   },
   {
     id: "web-partners",
+    organizationId: "org-acme",
     name: "Partner Monitor",
     address: "partners.acme.pl/feed",
     type: "scraper",
@@ -131,6 +227,16 @@ export const sources: SourceConnector[] = [
     nextSyncSeconds: 47,
     folders: ["Zmiany stron", "Formularze"],
     syncIntervalMinutes: 5,
+    publicConfig: {
+      url: "https://partners.acme.pl/feed",
+      extractionMode: "content",
+      cssSelector: "main",
+      userAgent: "MailFlowBot/1.0",
+      notifyOnInitial: false,
+    },
+    credentialsConfigured: true,
+    lastTestAt: "2026-07-27T12:22:00+02:00",
+    lastError: null,
   },
 ];
 
@@ -549,6 +655,137 @@ export const automations: Automation[] = [
   },
 ];
 
+export const deliveryAccounts: DeliveryAccount[] = [
+  {
+    id: "delivery-gmail-support",
+    organizationId: "org-acme",
+    provider: "gmail",
+    sourceConnectorId: "gmail-support",
+    name: "Gmail Support",
+    fromEmail: "support@acme.pl",
+    fromName: "Zespół Wsparcia",
+    replyTo: "support@acme.pl",
+    status: "active",
+    serverLabel: "Gmail API",
+    authenticationLabel: "OAuth 2.0",
+    dailyLimit: 2000,
+    hourlyLimit: 300,
+    sentToday: 482,
+    deliveryRate: 99.4,
+    credentialsConfigured: true,
+    publicConfig: {
+      scopes: ["gmail.send"],
+    },
+    lastTestAt: "2026-07-27T12:20:00+02:00",
+    lastError: null,
+    createdAt: "2026-05-14T09:00:00+02:00",
+  },
+  {
+    id: "delivery-outlook-sales",
+    organizationId: "org-acme",
+    provider: "outlook",
+    sourceConnectorId: "outlook-sales",
+    name: "Sprzedaż Microsoft 365",
+    fromEmail: "sales@acme.pl",
+    fromName: "Acme Sales",
+    replyTo: "sales@acme.pl",
+    status: "active",
+    serverLabel: "Microsoft Graph / SMTP OAuth",
+    authenticationLabel: "OAuth 2.0",
+    dailyLimit: 10000,
+    hourlyLimit: 1000,
+    sentToday: 1136,
+    deliveryRate: 98.7,
+    credentialsConfigured: true,
+    publicConfig: {
+      tenantId: "organizations",
+    },
+    lastTestAt: "2026-07-27T12:18:00+02:00",
+    lastError: null,
+    createdAt: "2026-05-18T10:30:00+02:00",
+  },
+  {
+    id: "delivery-info-smtp",
+    organizationId: "org-acme",
+    provider: "smtp",
+    sourceConnectorId: "imap-contact",
+    name: "Info transakcyjne",
+    fromEmail: "info@acme.pl",
+    fromName: "Acme",
+    replyTo: "info@acme.pl",
+    status: "active",
+    serverLabel: "smtp.example.com:465",
+    authenticationLabel: "Login + hasło aplikacji",
+    dailyLimit: 5000,
+    hourlyLimit: 600,
+    sentToday: 224,
+    deliveryRate: 99.1,
+    credentialsConfigured: true,
+    publicConfig: {
+      host: "smtp.example.com",
+      port: 465,
+      secure: true,
+    },
+    lastTestAt: "2026-07-27T11:55:00+02:00",
+    lastError: null,
+    createdAt: "2026-05-20T08:15:00+02:00",
+  },
+];
+
+export const templates: EmailTemplate[] = [
+  {
+    id: "template-notification",
+    organizationId: "org-acme",
+    name: "Powiadomienie standardowe",
+    description: "Uniwersalna wiadomość operacyjna z przyciskiem działania.",
+    kind: "notification",
+    subject: "Ważna informacja dotycząca {{message.reference}}",
+    textBody:
+      "Dzień dobry,\n\nprzesyłamy ważną informację dotyczącą {{message.reference}}.\n\n{{message.summary}}\n\nOtwórz szczegóły: {{action.url}}",
+    htmlBody:
+      '<h2>Dzień dobry,</h2><p>przesyłamy ważną informację dotyczącą Twojego zgłoszenia.</p><div class="email-info-box"><span>Numer sprawy</span><strong>{{message.reference}}</strong></div><p>{{message.summary}}</p><p><a class="email-cta" href="{{action.url}}">Otwórz szczegóły</a></p>',
+    variables: ["message.reference", "message.summary", "action.url"],
+    active: true,
+    version: 3,
+    updatedAt: "2026-07-26T14:30:00+02:00",
+    updatedBy: "Anna Nowak",
+  },
+  {
+    id: "template-support",
+    organizationId: "org-acme",
+    name: "Odpowiedź wsparcia",
+    description: "Potwierdzenie przyjęcia zgłoszenia i dane opiekuna.",
+    kind: "support",
+    subject: "Przyjęliśmy zgłoszenie {{message.reference}}",
+    textBody:
+      "Dzień dobry {{recipient.name}},\n\nTwoje zgłoszenie zostało przyjęte. Opiekun: {{agent.name}}.",
+    htmlBody:
+      "<h2>Dziękujemy za zgłoszenie</h2><p>Dzień dobry {{recipient.name}},</p><p>Twoje zgłoszenie <strong>{{message.reference}}</strong> zostało przyjęte.</p><p>Opiekun sprawy: {{agent.name}}</p>",
+    variables: ["recipient.name", "message.reference", "agent.name"],
+    active: true,
+    version: 2,
+    updatedAt: "2026-07-24T09:10:00+02:00",
+    updatedBy: "Jakub Kowalski",
+  },
+  {
+    id: "template-offer",
+    organizationId: "org-acme",
+    name: "Oferta handlowa",
+    description: "Krótka wiadomość sprzedażowa z personalizacją firmy.",
+    kind: "sales",
+    subject: "Oferta dla {{company.name}}",
+    textBody:
+      "Dzień dobry {{recipient.name}},\n\nprzygotowaliśmy ofertę dla {{company.name}}.",
+    htmlBody:
+      "<h2>Oferta przygotowana dla {{company.name}}</h2><p>Dzień dobry {{recipient.name}},</p><p>przesyłamy dopasowaną propozycję współpracy.</p>",
+    variables: ["recipient.name", "company.name"],
+    active: true,
+    version: 1,
+    updatedAt: "2026-07-22T16:05:00+02:00",
+    updatedBy: "Piotr Maj",
+  },
+];
+
 export const campaigns: OutboundCampaign[] = [
   {
     id: "send-1",
@@ -640,6 +877,57 @@ export const users: TeamUser[] = [
     lastActiveAt: "2026-07-24T15:04:00+02:00",
     twoFactorEnabled: false,
     assignedReviews: 0,
+  },
+];
+
+export const memberships: OrganizationMembership[] = [
+  {
+    organizationId: "org-acme",
+    userId: "user-1",
+    roleId: "role-org-acme-owner",
+    status: "active",
+    joinedAt: "2026-01-12T09:00:00+01:00",
+    invitedAt: null,
+  },
+  {
+    organizationId: "org-north",
+    userId: "user-1",
+    roleId: "role-org-north-operator",
+    status: "active",
+    joinedAt: "2026-05-05T10:00:00+02:00",
+    invitedAt: "2026-05-04T11:35:00+02:00",
+  },
+  {
+    organizationId: "org-acme",
+    userId: "user-2",
+    roleId: "role-org-acme-admin",
+    status: "active",
+    joinedAt: "2026-02-02T09:20:00+01:00",
+    invitedAt: "2026-02-01T12:00:00+01:00",
+  },
+  {
+    organizationId: "org-north",
+    userId: "user-2",
+    roleId: "role-org-north-viewer",
+    status: "active",
+    joinedAt: "2026-06-10T14:00:00+02:00",
+    invitedAt: "2026-06-10T13:45:00+02:00",
+  },
+  {
+    organizationId: "org-acme",
+    userId: "user-3",
+    roleId: "role-org-acme-operator",
+    status: "active",
+    joinedAt: "2026-03-18T08:30:00+01:00",
+    invitedAt: "2026-03-17T16:10:00+01:00",
+  },
+  {
+    organizationId: "org-acme",
+    userId: "user-4",
+    roleId: "role-org-acme-reviewer",
+    status: "invited",
+    joinedAt: null,
+    invitedAt: "2026-07-24T15:04:00+02:00",
   },
 ];
 

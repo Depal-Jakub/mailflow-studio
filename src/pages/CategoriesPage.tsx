@@ -11,9 +11,12 @@ import {
   MoreHorizontal,
   Plus,
   Search,
+  Settings2,
   ShieldAlert,
   Tags,
+  Trash2,
 } from "lucide-react";
+import { useNavigate } from "react-router";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { FormField } from "../components/ui/FormField";
@@ -44,12 +47,22 @@ const palette = [
 ];
 
 export function CategoriesPage() {
-  const { categories, addCategory, addToast } = useAppState();
+  const {
+    categories,
+    addCategory,
+    updateCategory,
+    removeCategory,
+    addToast,
+  } = useAppState();
+  const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
   const [newColor, setNewColor] = useState(palette[0]);
+  const [newDefaultScore, setNewDefaultScore] = useState(10);
+  const [newActive, setNewActive] = useState(true);
 
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("pl");
@@ -66,8 +79,45 @@ export function CategoriesPage() {
     0,
   );
 
-  const createCategory = () => {
+  const openCreate = () => {
+    setEditingCategory(null);
+    setNewName("");
+    setNewDescription("");
+    setNewColor(palette[0]);
+    setNewDefaultScore(10);
+    setNewActive(true);
+    setModalOpen(true);
+  };
+
+  const openEdit = (category: Category) => {
+    setEditingCategory(category);
+    setNewName(category.name);
+    setNewDescription(category.description);
+    setNewColor(category.color);
+    setNewDefaultScore(category.defaultScore);
+    setNewActive(category.active);
+    setModalOpen(true);
+  };
+
+  const saveCategory = () => {
     if (!newName.trim()) return;
+    if (editingCategory) {
+      updateCategory(editingCategory.id, {
+        name: newName.trim(),
+        description:
+          newDescription.trim() || "Kategoria wiadomości bez dodatkowego opisu.",
+        color: newColor,
+        defaultScore: newDefaultScore,
+        active: newActive,
+      });
+      setModalOpen(false);
+      addToast({
+        title: "Kategoria zaktualizowana",
+        message: `${newName.trim()} ma nowe ustawienia i domyślny score.`,
+        tone: "success",
+      });
+      return;
+    }
     const category: Category = {
       id: `category-${crypto.randomUUID()}`,
       name: newName.trim(),
@@ -75,10 +125,10 @@ export function CategoriesPage() {
         newDescription.trim() || "Nowa kategoria utworzona ręcznie.",
       color: newColor,
       icon: "briefcase",
-      defaultScore: 10,
+      defaultScore: newDefaultScore,
       messageCount: 0,
       automationCount: 0,
-      active: true,
+      active: newActive,
     };
     addCategory(category);
     setModalOpen(false);
@@ -95,7 +145,7 @@ export function CategoriesPage() {
     <>
       <PageHeader
         actions={
-          <Button icon={Plus} onClick={() => setModalOpen(true)} variant="primary">
+          <Button icon={Plus} onClick={openCreate} variant="primary">
             Nowa kategoria
           </Button>
         }
@@ -169,7 +219,12 @@ export function CategoriesPage() {
                   <Badge dot tone={category.active ? "success" : "neutral"}>
                     {category.active ? "Aktywna" : "Wyłączona"}
                   </Badge>
-                  <button aria-label="Więcej opcji" className="icon-button" type="button">
+                  <button
+                    aria-label={`Edytuj ${category.name}`}
+                    className="icon-button"
+                    onClick={() => openEdit(category)}
+                    type="button"
+                  >
                     <MoreHorizontal size={17} />
                   </button>
                 </header>
@@ -205,11 +260,22 @@ export function CategoriesPage() {
                   </div>
                 </div>
                 <footer>
-                  <Button icon={Edit3} size="sm">
-                    Edytuj zasady
+                  <Button
+                    icon={Edit3}
+                    onClick={() => openEdit(category)}
+                    size="sm"
+                  >
+                    Edytuj kategorię
                   </Button>
-                  <Button icon={Bot} size="sm" variant="ghost">
-                    Automatyzacje
+                  <Button
+                    icon={Settings2}
+                    onClick={() =>
+                      navigate(`/rules?category=${encodeURIComponent(category.id)}`)
+                    }
+                    size="sm"
+                    variant="ghost"
+                  >
+                    Edytuj zasady
                   </Button>
                 </footer>
               </article>
@@ -223,18 +289,36 @@ export function CategoriesPage() {
         footer={
           <>
             <Button onClick={() => setModalOpen(false)}>Anuluj</Button>
+            {editingCategory && editingCategory.messageCount === 0 ? (
+              <Button
+                icon={Trash2}
+                onClick={() => {
+                  removeCategory(editingCategory.id);
+                  setModalOpen(false);
+                  addToast({
+                    title: "Kategoria usunięta",
+                    message:
+                      "Nie miała wiadomości, więc została bezpiecznie usunięta.",
+                    tone: "warning",
+                  });
+                }}
+                variant="danger"
+              >
+                Usuń
+              </Button>
+            ) : null}
             <Button
               disabled={!newName.trim()}
-              onClick={createCategory}
+              onClick={saveCategory}
               variant="primary"
             >
-              Utwórz kategorię
+              {editingCategory ? "Zapisz zmiany" : "Utwórz kategorię"}
             </Button>
           </>
         }
         onClose={() => setModalOpen(false)}
         open={modalOpen}
-        title="Nowa kategoria"
+        title={editingCategory ? "Edytuj kategorię" : "Nowa kategoria"}
       >
         <div className="form-stack">
           <FormField label="Nazwa kategorii">
@@ -269,12 +353,23 @@ export function CategoriesPage() {
           </FormField>
           <div className="form-grid form-grid--two">
             <FormField label="Domyślny score">
-              <input defaultValue="10" max="100" min="0" type="number" />
+              <input
+                max="100"
+                min="-100"
+                onChange={(event) =>
+                  setNewDefaultScore(Number(event.target.value))
+                }
+                type="number"
+                value={newDefaultScore}
+              />
             </FormField>
             <FormField label="Status">
-              <select defaultValue="active">
+              <select
+                onChange={(event) => setNewActive(event.target.value === "active")}
+                value={newActive ? "active" : "draft"}
+              >
                 <option value="active">Aktywna</option>
-                <option value="draft">Wersja robocza</option>
+                <option value="draft">Wyłączona</option>
               </select>
             </FormField>
           </div>
@@ -283,4 +378,3 @@ export function CategoriesPage() {
     </>
   );
 }
-

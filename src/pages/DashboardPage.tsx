@@ -30,7 +30,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { systemHealth, volumeData } from "../data/demo";
 import { useAppState } from "../lib/AppState";
 import {
   formatCountdown,
@@ -41,6 +40,9 @@ import {
 import type { ConnectorStatus, MessageStatus } from "../types";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
+import { useOperationalReport } from "../lib/reports";
+import { api } from "../services/api";
+import { demoMode } from "../services/supabase";
 
 const statusLabels: Record<MessageStatus, string> = {
   new: "Nowa",
@@ -79,18 +81,41 @@ const healthStatusLabel: Record<ConnectorStatus, string> = {
 };
 
 export function DashboardPage() {
-  const { messages, categories, sources, automations, addToast } = useAppState();
-  const [healthCounters, setHealthCounters] = useState(() =>
-    Object.fromEntries(
-      systemHealth.map((item) => [item.key, item.countdownSeconds]),
-    ),
+  const {
+    messages,
+    categories,
+    sources,
+    automations,
+    activeOrganizationId,
+    addToast,
+  } = useAppState();
+  const [range, setRange] = useState(14);
+  const [syncing, setSyncing] = useState(false);
+  const { report, loading: reportLoading } = useOperationalReport(range);
+  const healthItems = useMemo(
+    () =>
+      sources.map((source) => ({
+        key: source.id,
+        label: source.name,
+        detail: source.lastError
+          ? source.lastError
+          : source.lastSyncAt
+            ? `Ostatnia synchronizacja ${formatTime(source.lastSyncAt)}`
+            : "Oczekuje na pierwszą synchronizację",
+        status: source.status,
+        countdownSeconds: source.nextSyncSeconds,
+      })),
+    [sources],
+  );
+  const [healthCounters, setHealthCounters] = useState<Record<string, number>>(
+    {},
   );
 
   useEffect(() => {
     const interval = window.setInterval(() => {
       setHealthCounters((current) =>
         Object.fromEntries(
-          systemHealth.map((item) => {
+          healthItems.map((item) => {
             const previous = current[item.key] ?? item.countdownSeconds;
             return [
               item.key,
@@ -101,23 +126,11 @@ export function DashboardPage() {
       );
     }, 1000);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [healthItems]);
 
-  const stats = useMemo(() => {
-    const review = messages.filter((message) => message.status === "review").length;
-    const automated = messages.filter(
-      (message) => message.status === "automated",
-    ).length;
-    const failed = messages.filter((message) => message.status === "failed").length;
-    const classified = messages.filter((message) =>
-      ["classified", "review", "automated", "failed"].includes(message.status),
-    ).length;
-    return { review, automated, failed, classified };
-  }, [messages]);
-
-  const categoryDistribution = categories.map((category) => ({
+  const categoryDistribution = report.categories.map((category) => ({
     name: category.name,
-    value: category.messageCount,
+    value: category.count,
     color: category.color,
   }));
 
@@ -125,12 +138,63 @@ export function DashboardPage() {
     .filter((message) => message.direction === "incoming")
     .slice(0, 8);
 
-  const runManualSync = () => {
-    addToast({
-      title: "Synchronizacja uruchomiona",
-      message: "Wszystkie aktywne źródła zostały dodane do kolejki.",
-      tone: "success",
+  const volumeChart = useMemo(() => {
+    const values = report.daily.map((item) => item.incoming);
+    return report.daily.map((item, index) => {
+      const start = Math.max(0, index - 6);
+      const windowValues = values.slice(start, index + 1);
+      return {
+        day: new Intl.DateTimeFormat("pl-PL", {
+          day: "2-digit",
+          month: "2-digit",
+        }).format(new Date(`${item.day}T12:00:00Z`)),
+        messages: item.incoming,
+        average:
+          windowValues.reduce((sum, value) => sum + value, 0) /
+          Math.max(windowValues.length, 1),
+      };
     });
+  }, [report.daily]);
+
+  const runManualSync = async () => {
+    const syncable = sources.filter(
+      (source) => source.status === "active" && source.type !== "webhook",
+    );
+    if (syncable.length === 0) {
+      addToast({
+        title: "Brak aktywnych źródeł do synchronizacji",
+        message: "Włącz źródło pocztowe, scraper lub kanał RSS.",
+        tone: "warning",
+      });
+      return;
+    }
+    setSyncing(true);
+    try {
+      if (!demoMode) {
+        await Promise.all(
+          syncable.map((source) =>
+            api.post(
+              `sources/${source.id}/sync`,
+              {},
+              activeOrganizationId,
+            ),
+          ),
+        );
+      }
+      addToast({
+        title: "Synchronizacja uruchomiona",
+        message: `${syncable.length} źródeł dodano do kolejki.`,
+        tone: "success",
+      });
+    } catch (error) {
+      addToast({
+        title: "Nie udało się uruchomić synchronizacji",
+        message: error instanceof Error ? error.message : "Spróbuj ponownie.",
+        tone: "error",
+      });
+    } finally {
+      setSyncing(false);
+    }
   };
 
   return (
@@ -141,12 +205,20 @@ export function DashboardPage() {
           <p>Przetwarzanie wiadomości i automatyzacje w czasie rzeczywistym.</p>
         </div>
         <div className="dashboard-titlebar__actions">
-          <select aria-label="Zakres raportu" defaultValue="14">
+          <select
+            aria-label="Zakres raportu"
+            onChange={(event) => setRange(Number(event.target.value))}
+            value={range}
+          >
             <option value="7">Ostatnie 7 dni</option>
             <option value="14">Ostatnie 14 dni</option>
             <option value="30">Ostatnie 30 dni</option>
           </select>
-          <Button icon={RefreshCw} onClick={runManualSync}>
+          <Button
+            icon={RefreshCw}
+            loading={syncing}
+            onClick={() => void runManualSync()}
+          >
             Synchronizuj
           </Button>
         </div>
@@ -156,7 +228,10 @@ export function DashboardPage() {
         <div className="section-heading section-heading--inline">
           <div>
             <h2>Połączone źródła</h2>
-            <p>{sources.length} aktywne kanały wejściowe</p>
+            <p>
+              {sources.filter((source) => source.status === "active").length}{" "}
+              aktywnych kanałów wejściowych
+            </p>
           </div>
           <Link to="/accounts">
             Zarządzaj <ArrowRight size={14} />
@@ -195,8 +270,8 @@ export function DashboardPage() {
           </span>
           <div>
             <span>Nowe wiadomości</span>
-            <strong>266</strong>
-            <small className="trend trend--up">+18% vs poprzedni okres</small>
+            <strong>{formatNumber(report.messages.new)}</strong>
+            <small>{formatNumber(report.messages.incoming)} odebranych</small>
           </div>
         </article>
         <article className="metric-tile">
@@ -205,8 +280,15 @@ export function DashboardPage() {
           </span>
           <div>
             <span>Automatycznie sklasyfikowane</span>
-            <strong>87,4%</strong>
-            <small className="trend trend--up">+2,6 pp jakości</small>
+            <strong>
+              {formatPercent(
+                report.messages.total > 0
+                  ? (report.messages.classified / report.messages.total) * 100
+                  : 0,
+              )}
+              %
+            </strong>
+            <small>{formatNumber(report.messages.classified)} wiadomości</small>
           </div>
         </article>
         <article className="metric-tile">
@@ -215,8 +297,8 @@ export function DashboardPage() {
           </span>
           <div>
             <span>Wymagają przeglądu</span>
-            <strong>{stats.review + 32}</strong>
-            <small className="trend trend--down">-12% tydzień do tygodnia</small>
+            <strong>{formatNumber(report.messages.review)}</strong>
+            <small>aktualny zakres raportu</small>
           </div>
         </article>
         <article className="metric-tile">
@@ -225,8 +307,8 @@ export function DashboardPage() {
           </span>
           <div>
             <span>Automatyzacje zakończone</span>
-            <strong>128</strong>
-            <small className="trend trend--up">+24% w tym okresie</small>
+            <strong>{formatNumber(report.automations.completed)}</strong>
+            <small>{formatNumber(report.automations.queued)} w kolejce</small>
           </div>
         </article>
         <article className="metric-tile">
@@ -235,8 +317,12 @@ export function DashboardPage() {
           </span>
           <div>
             <span>Błędy zadań</span>
-            <strong>{stats.failed + 6}</strong>
-            <small className="trend trend--down">-22% vs poprzedni okres</small>
+            <strong>
+              {formatNumber(
+                report.messages.failed + report.automations.failed,
+              )}
+            </strong>
+            <small>wiadomości i automatyzacje</small>
           </div>
         </article>
       </section>
@@ -249,8 +335,8 @@ export function DashboardPage() {
                 <h2>Przepływ przetwarzania</h2>
                 <p>Od pobrania do wykonania automatyzacji.</p>
               </div>
-              <Badge tone="success" dot>
-                system działa
+              <Badge tone={reportLoading ? "warning" : "success"} dot>
+                {reportLoading ? "odświeżanie" : "system działa"}
               </Badge>
             </div>
             <div className="analytics-panel__body">
@@ -258,36 +344,60 @@ export function DashboardPage() {
                 {[
                   {
                     label: "Pobrane",
-                    count: 9860,
+                    count: report.messages.total,
                     percent: 100,
                     color: "#109f97",
                     icon: Inbox,
                   },
                   {
                     label: "Sparsowane",
-                    count: 9742,
-                    percent: 98.8,
+                    count: Math.max(
+                      0,
+                      report.messages.total - report.messages.failed,
+                    ),
+                    percent:
+                      report.messages.total > 0
+                        ? (Math.max(
+                            0,
+                            report.messages.total - report.messages.failed,
+                          ) /
+                            report.messages.total) *
+                          100
+                        : 0,
                     color: "#55b84d",
                     icon: FileSearch,
                   },
                   {
                     label: "Sklasyfikowane",
-                    count: 8618,
-                    percent: 87.4,
+                    count: report.messages.classified,
+                    percent:
+                      report.messages.total > 0
+                        ? (report.messages.classified /
+                            report.messages.total) *
+                          100
+                        : 0,
                     color: "#2473c8",
                     icon: MailCheck,
                   },
                   {
                     label: "Wymagają przeglądu",
-                    count: 1124,
-                    percent: 11.4,
+                    count: report.messages.review,
+                    percent:
+                      report.messages.total > 0
+                        ? (report.messages.review / report.messages.total) * 100
+                        : 0,
                     color: "#e9a51b",
                     icon: Clock3,
                   },
                   {
                     label: "Zautomatyzowane",
-                    count: 8126,
-                    percent: 82.4,
+                    count: report.messages.automated,
+                    percent:
+                      report.messages.total > 0
+                        ? (report.messages.automated /
+                            report.messages.total) *
+                          100
+                        : 0,
                     color: "#2d9c67",
                     icon: Sparkles,
                   },
@@ -323,11 +433,11 @@ export function DashboardPage() {
                 <div className="chart-title">
                   <div>
                     <h3>Wolumen wiadomości</h3>
-                    <span>Ostatnie 14 dni</span>
+                    <span>Ostatnie {range} dni</span>
                   </div>
                 </div>
                 <ResponsiveContainer height={260} width="100%">
-                  <ComposedChart data={volumeData}>
+                  <ComposedChart data={volumeChart}>
                     <CartesianGrid stroke="#e7edf2" strokeDasharray="3 3" />
                     <XAxis
                       axisLine={false}
@@ -465,7 +575,7 @@ export function DashboardPage() {
               <Wifi size={18} className="text-success" />
             </div>
             <div className="health-list">
-              {systemHealth.map((item) => (
+              {healthItems.map((item) => (
                 <div className="health-item" key={item.key}>
                   <span className="health-item__icon">
                     {item.status === "error" ? (
@@ -497,18 +607,42 @@ export function DashboardPage() {
               </div>
             </div>
             <div className="activity-list">
-              {automations.slice(0, 4).map((automation) => (
-                <div className="activity-row" key={automation.id}>
-                  <span className="activity-row__icon">
-                    <CheckCircle2 size={16} />
-                  </span>
-                  <div>
-                    <strong>{automation.name}</strong>
-                    <span>{formatTime(automation.lastRunAt)}</span>
+              {automations.slice(0, 4).map((automation) => {
+                const status = String(
+                  automation.recentRuns?.[0]?.status ??
+                    (automation.runs > 0 ? "complete" : "pending"),
+                );
+                return (
+                  <div className="activity-row" key={automation.id}>
+                    <span className="activity-row__icon">
+                      <CheckCircle2 size={16} />
+                    </span>
+                    <div>
+                      <strong>{automation.name}</strong>
+                      <span>
+                        {automation.runs > 0
+                          ? formatTime(automation.lastRunAt)
+                          : "Jeszcze nie uruchamiano"}
+                      </span>
+                    </div>
+                    <Badge
+                      tone={
+                        status === "complete"
+                          ? "success"
+                          : status === "failed"
+                            ? "danger"
+                            : "warning"
+                      }
+                    >
+                      {status === "complete"
+                        ? "Sukces"
+                        : status === "failed"
+                          ? "Błąd"
+                          : "W kolejce"}
+                    </Badge>
                   </div>
-                  <Badge tone="success">Sukces</Badge>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <Link className="panel-link" to="/automations">
               Przejdź do automatyzacji <ArrowRight size={14} />
@@ -519,7 +653,7 @@ export function DashboardPage() {
             <div className="panel__header">
               <div>
                 <h2>Dystrybucja kategorii</h2>
-                <p>Udział wiadomości w 14 dniach.</p>
+                <p>Udział wiadomości w {range} dniach.</p>
               </div>
             </div>
             <div className="distribution-panel__body">

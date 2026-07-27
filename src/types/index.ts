@@ -9,9 +9,82 @@ export type MessageStatus =
 export type SourceType = "gmail" | "outlook" | "imap" | "webhook" | "scraper";
 export type ConnectorStatus = "active" | "warning" | "error" | "paused";
 export type UserRole = "owner" | "admin" | "operator" | "reviewer" | "viewer";
+export type MembershipStatus = "active" | "invited" | "suspended";
+
+export type Permission =
+  | "dashboard.view"
+  | "messages.view"
+  | "messages.classify"
+  | "messages.assign"
+  | "messages.export"
+  | "sources.view"
+  | "sources.manage"
+  | "sources.test"
+  | "categories.view"
+  | "categories.manage"
+  | "rules.view"
+  | "rules.manage"
+  | "rules.publish"
+  | "automations.view"
+  | "automations.manage"
+  | "send.view"
+  | "send.compose"
+  | "send.approve"
+  | "send.schedule"
+  | "templates.view"
+  | "templates.manage"
+  | "accounts.view"
+  | "accounts.manage"
+  | "users.view"
+  | "users.invite"
+  | "users.manage"
+  | "roles.manage"
+  | "reports.view"
+  | "reports.export"
+  | "audit.view"
+  | "api_keys.view"
+  | "api_keys.manage"
+  | "settings.view"
+  | "settings.manage"
+  | "organization.manage"
+  | "organization.billing";
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  initials: string;
+  timezone: string;
+  locale: string;
+  plan: "trial" | "business" | "enterprise";
+  status: "active" | "suspended";
+  createdAt: string;
+}
+
+export interface RoleDefinition {
+  id: string;
+  organizationId: string;
+  key: string;
+  name: string;
+  description: string;
+  color: string;
+  builtIn: boolean;
+  permissions: Permission[];
+  memberCount: number;
+}
+
+export interface OrganizationMembership {
+  organizationId: string;
+  userId: string;
+  roleId: string;
+  status: MembershipStatus;
+  joinedAt: string | null;
+  invitedAt: string | null;
+}
 
 export interface Category {
   id: string;
+  organizationId?: string;
   name: string;
   description: string;
   color: string;
@@ -24,6 +97,7 @@ export interface Category {
 
 export interface EmailMessage {
   id: string;
+  organizationId?: string;
   sender: string;
   senderName: string;
   recipient: string;
@@ -45,6 +119,7 @@ export interface EmailMessage {
 
 export interface SourceConnector {
   id: string;
+  organizationId?: string;
   name: string;
   address: string;
   type: SourceType;
@@ -55,6 +130,11 @@ export interface SourceConnector {
   nextSyncSeconds: number;
   folders: string[];
   syncIntervalMinutes: number;
+  publicConfig?: Record<string, unknown>;
+  credentialsConfigured?: boolean;
+  lastTestAt?: string | null;
+  lastError?: string | null;
+  createdAt?: string;
 }
 
 export type ConditionField =
@@ -109,6 +189,7 @@ export interface RuleAction {
 
 export interface AutomationRule {
   id: string;
+  organizationId?: string;
   name: string;
   description: string;
   categoryId: string | null;
@@ -125,6 +206,7 @@ export interface AutomationRule {
 
 export interface Automation {
   id: string;
+  organizationId?: string;
   name: string;
   trigger: string;
   steps: string[];
@@ -133,10 +215,17 @@ export interface Automation {
   successRate: number;
   lastRunAt: string;
   nextRunAt?: string;
+  description?: string;
+  triggerType?: string;
+  triggerConfig?: Record<string, unknown>;
+  stepDefinitions?: Array<Record<string, unknown>>;
+  version?: number;
+  recentRuns?: Array<Record<string, unknown>>;
 }
 
 export interface OutboundCampaign {
   id: string;
+  organizationId?: string;
   subject: string;
   sender: string;
   audience: string;
@@ -145,6 +234,16 @@ export interface OutboundCampaign {
   delivered: number;
   opened: number;
   createdAt: string;
+  templateId?: string | null;
+  deliveryAccountId?: string | null;
+  scheduledAt?: string | null;
+  textBody?: string;
+  htmlBody?: string;
+  recipientList?: Array<{
+    email: string;
+    name?: string | null;
+    variables?: Record<string, unknown>;
+  }>;
 }
 
 export interface TeamUser {
@@ -157,10 +256,66 @@ export interface TeamUser {
   lastActiveAt: string;
   twoFactorEnabled: boolean;
   assignedReviews: number;
+  membershipCount?: number;
+}
+
+export type DeliveryProvider =
+  | "gmail"
+  | "outlook"
+  | "smtp"
+  | "ses"
+  | "sendgrid"
+  | "resend";
+
+export interface DeliveryAccount {
+  id: string;
+  organizationId: string;
+  provider: DeliveryProvider;
+  sourceConnectorId: string | null;
+  name: string;
+  fromEmail: string;
+  fromName: string;
+  replyTo: string;
+  status: ConnectorStatus;
+  serverLabel: string;
+  authenticationLabel: string;
+  dailyLimit: number;
+  hourlyLimit: number;
+  sentToday: number;
+  deliveryRate: number;
+  credentialsConfigured: boolean;
+  publicConfig: Record<string, unknown>;
+  lastTestAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+}
+
+export type TemplateKind =
+  | "notification"
+  | "support"
+  | "sales"
+  | "transactional"
+  | "blank";
+
+export interface EmailTemplate {
+  id: string;
+  organizationId: string;
+  name: string;
+  description: string;
+  kind: TemplateKind;
+  subject: string;
+  textBody: string;
+  htmlBody: string;
+  variables: string[];
+  active: boolean;
+  version: number;
+  updatedAt: string;
+  updatedBy: string;
 }
 
 export interface AuditEvent {
   id: string;
+  organizationId?: string;
   actor: string;
   action: string;
   target: string;
@@ -177,3 +332,46 @@ export interface SystemHealth {
   countdownSeconds: number;
 }
 
+export type ApiKeyScope =
+  | "messages:read"
+  | "messages:write"
+  | "categories:read"
+  | "categories:write"
+  | "sources:read"
+  | "sources:sync"
+  | "templates:read"
+  | "outbound:read"
+  | "outbound:write"
+  | "audit:read"
+  | "*";
+
+export interface ApiKeyRecord {
+  id: string;
+  name: string;
+  prefix: string;
+  scopes: ApiKeyScope[];
+  status: "active" | "revoked";
+  rate_limit_per_minute: number;
+  allowed_ips: string[];
+  expires_at: string | null;
+  last_used_at: string | null;
+  last_used_ip: string | null;
+  usage_count: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+}
+
+export interface ApiRequestLog {
+  id: string;
+  request_id: string;
+  method: string;
+  path: string;
+  status_code: number;
+  duration_ms: number;
+  ip_address: string | null;
+  user_agent: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}

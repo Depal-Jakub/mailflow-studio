@@ -79,4 +79,10 @@ export const api = {
       body: JSON.stringify(body),
     });
   },
+  delete<T>(path: string, organizationId?: string) {
+    return request<T>(path, {
+      method: "DELETE",
+      organizationId,
+    });
+  },
 };

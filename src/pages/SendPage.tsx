@@ -1,25 +1,42 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   CalendarClock,
   CheckCircle2,
-  ChevronDown,
   Code2,
+  Copy,
+  Edit3,
   Eye,
   FileText,
+  LayoutTemplate,
   MailCheck,
   MousePointerClick,
   Plus,
+  Save,
   Search,
   Send,
+  Settings2,
+  Trash2,
   Users,
 } from "lucide-react";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
+import { Drawer } from "../components/ui/Drawer";
 import { FormField } from "../components/ui/FormField";
 import { Modal } from "../components/ui/Modal";
 import { PageHeader } from "../components/ui/PageHeader";
 import { useAppState } from "../lib/AppState";
+import {
+  emailPreviewDocument,
+  extractVariables,
+  htmlToText,
+  sanitizeEmailHtml,
+} from "../lib/emailTemplates";
 import { formatDateTime, formatNumber, formatPercent } from "../lib/format";
+import type {
+  EmailTemplate,
+  OutboundCampaign,
+  TemplateKind,
+} from "../types";
 
 const campaignStatus = {
   draft: { label: "Wersja robocza", tone: "neutral" },
@@ -29,23 +46,101 @@ const campaignStatus = {
   failed: { label: "Błąd", tone: "danger" },
 } as const;
 
+const emptyHtml =
+  "<h2>Dzień dobry,</h2><p>Wpisz treść wiadomości.</p><p><a class=\"email-cta\" href=\"{{action.url}}\">Otwórz szczegóły</a></p>";
+
+interface ComposerDraft {
+  accountId: string;
+  mode: "now" | "schedule" | "draft";
+  scheduledAt: string;
+  audienceType: "category" | "manual" | "all";
+  categoryId: string;
+  recipients: string;
+  subject: string;
+  templateId: string;
+  htmlBody: string;
+  includeUnsubscribe: boolean;
+  trackDelivery: boolean;
+  includeOriginal: boolean;
+}
+
+const blankTemplate = (organizationId: string): EmailTemplate => ({
+  id: `template-${crypto.randomUUID()}`,
+  organizationId,
+  name: "Nowy szablon",
+  description: "Własny szablon wiadomości.",
+  kind: "notification",
+  subject: "Temat wiadomości",
+  textBody: "Dzień dobry,\n\nTreść wiadomości.",
+  htmlBody: emptyHtml,
+  variables: ["action.url"],
+  active: true,
+  version: 1,
+  updatedAt: new Date().toISOString(),
+  updatedBy: "Jakub Kowalski",
+});
+
 export function SendPage() {
-  const { campaigns, sources, categories, addToast } = useAppState();
+  const {
+    campaigns,
+    categories,
+    messages,
+    deliveryAccounts,
+    templates,
+    activeOrganizationId,
+    addCampaign,
+    addTemplate,
+    updateTemplate,
+    removeTemplate,
+    addToast,
+  } = useAppState();
+  const editorRef = useRef<HTMLDivElement>(null);
   const [composerOpen, setComposerOpen] = useState(false);
-  const [previewMode, setPreviewMode] = useState<"editor" | "preview" | "html">(
-    "editor",
-  );
+  const [composerMode, setComposerMode] = useState<
+    "editor" | "preview" | "html"
+  >("editor");
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
+  const [linkEditorOpen, setLinkEditorOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("https://");
+  const [selectedTemplateDraft, setSelectedTemplateDraft] =
+    useState<EmailTemplate | null>(null);
+  const [campaignPreview, setCampaignPreview] =
+    useState<OutboundCampaign | null>(null);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [minimumScheduleAt] = useState(() =>
+    new Date(Date.now() + 60_000).toISOString().slice(0, 16),
+  );
+  const [draft, setDraft] = useState<ComposerDraft>(() => {
+    const template = templates[0];
+    return {
+      accountId: deliveryAccounts[0]?.id ?? "",
+      mode: "now",
+      scheduledAt: "",
+      audienceType: "category",
+      categoryId: categories[0]?.id ?? "",
+      recipients: "",
+      subject: template?.subject ?? "Ważna informacja",
+      templateId: template?.id ?? "",
+      htmlBody: template?.htmlBody ?? emptyHtml,
+      includeUnsubscribe: true,
+      trackDelivery: true,
+      includeOriginal: false,
+    };
+  });
 
   const filteredCampaigns = useMemo(() => {
     const normalized = search.toLocaleLowerCase("pl").trim();
-    return campaigns.filter((campaign) =>
-      [campaign.subject, campaign.sender, campaign.audience]
+    return campaigns.filter((campaign) => {
+      if (statusFilter !== "all" && campaign.status !== statusFilter) {
+        return false;
+      }
+      return [campaign.subject, campaign.sender, campaign.audience]
         .join(" ")
         .toLocaleLowerCase("pl")
-        .includes(normalized),
-    );
-  }, [campaigns, search]);
+        .includes(normalized);
+    });
+  }, [campaigns, search, statusFilter]);
 
   const totalRecipients = campaigns.reduce(
     (sum, campaign) => sum + campaign.recipients,
@@ -59,16 +154,233 @@ export function SendPage() {
     (sum, campaign) => sum + campaign.opened,
     0,
   );
+  const selectedAccount =
+    deliveryAccounts.find((account) => account.id === draft.accountId) ??
+    deliveryAccounts[0];
+  const selectedCategory = categories.find(
+    (category) => category.id === draft.categoryId,
+  );
+  const previewDocument = emailPreviewDocument({
+    html: draft.htmlBody,
+    subject: draft.subject,
+    senderName: selectedAccount?.fromName ?? "MailFlow Studio",
+    senderEmail: selectedAccount?.fromEmail ?? "brak-konta@example.com",
+  });
+
+  const resolvedRecipients = useMemo(() => {
+    const unique = new Map<
+      string,
+      { email: string; name?: string | null }
+    >();
+    if (draft.audienceType === "manual") {
+      draft.recipients
+        .split(/[,\n;]/)
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+        .forEach((email) => unique.set(email, { email }));
+      return [...unique.values()];
+    }
+    messages
+      .filter(
+        (message) =>
+          message.direction === "incoming" &&
+          (draft.audienceType === "all" ||
+            message.categoryId === draft.categoryId),
+      )
+      .forEach((message) => {
+        const email = message.sender.trim().toLowerCase();
+        if (
+          /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) &&
+          email !== selectedAccount?.fromEmail.toLowerCase()
+        ) {
+          unique.set(email, {
+            email,
+            name: message.senderName || null,
+          });
+        }
+      });
+    return [...unique.values()];
+  }, [
+    draft.audienceType,
+    draft.categoryId,
+    draft.recipients,
+    messages,
+    selectedAccount?.fromEmail,
+  ]);
+
+  const openComposer = () => {
+    const template = templates[0];
+    setDraft({
+      accountId: deliveryAccounts[0]?.id ?? "",
+      mode: "now",
+      scheduledAt: "",
+      audienceType: categories.length ? "category" : "manual",
+      categoryId: categories[0]?.id ?? "",
+      recipients: "",
+      subject: template?.subject ?? "Ważna informacja",
+      templateId: template?.id ?? "",
+      htmlBody: template?.htmlBody ?? emptyHtml,
+      includeUnsubscribe: true,
+      trackDelivery: true,
+      includeOriginal: false,
+    });
+    setComposerMode("editor");
+    setComposerOpen(true);
+  };
+
+  const selectTemplate = (templateId: string) => {
+    const template = templates.find((item) => item.id === templateId);
+    setDraft((current) => ({
+      ...current,
+      templateId,
+      subject: template?.subject ?? current.subject,
+      htmlBody: template?.htmlBody ?? current.htmlBody,
+    }));
+  };
+
+  const command = (name: string, value?: string) => {
+    editorRef.current?.focus();
+    document.execCommand(name, false, value);
+    setDraft((current) => ({
+      ...current,
+      htmlBody: sanitizeEmailHtml(editorRef.current?.innerHTML ?? current.htmlBody),
+    }));
+  };
+
+  const recipientCount = () => {
+    return resolvedRecipients.length;
+  };
+
+  const saveCampaign = (forceDraft = false) => {
+    if (!draft.subject.trim()) {
+      addToast({
+        title: "Brakuje tematu",
+        message: "Podaj temat wiadomości przed zapisaniem.",
+        tone: "warning",
+      });
+      return;
+    }
+    if (!selectedAccount) {
+      addToast({
+        title: "Brakuje konta wysyłkowego",
+        message: "Najpierw skonfiguruj aktywne konto w module Skrzynki i SMTP.",
+        tone: "warning",
+      });
+      return;
+    }
+    if (
+      draft.mode === "schedule" &&
+      !forceDraft &&
+      (!draft.scheduledAt ||
+        new Date(draft.scheduledAt).getTime() <= Date.now())
+    ) {
+      addToast({
+        title: "Nieprawidłowy termin",
+        message: "Wybierz przyszłą datę i godzinę wysyłki.",
+        tone: "warning",
+      });
+      return;
+    }
+    const count = recipientCount();
+    if (count === 0 && !forceDraft) {
+      addToast({
+        title: "Brakuje odbiorców",
+        message: "Wybierz kategorię, segment lub wpisz adresy ręcznie.",
+        tone: "warning",
+      });
+      return;
+    }
+
+    const status: OutboundCampaign["status"] = forceDraft
+      ? "draft"
+      : draft.mode === "schedule"
+        ? "scheduled"
+        : draft.mode === "draft"
+          ? "draft"
+          : "sending";
+    const audience =
+      draft.audienceType === "category"
+        ? `Kategoria: ${selectedCategory?.name ?? "bez kategorii"}`
+        : draft.audienceType === "all"
+          ? "Wszyscy aktywni odbiorcy"
+          : `${count} adresów ręcznych`;
+
+    addCampaign({
+      id: `send-${crypto.randomUUID()}`,
+      organizationId: activeOrganizationId,
+      subject: draft.subject.trim(),
+      sender: selectedAccount.fromEmail,
+      audience,
+      status,
+      recipients: count,
+      delivered: 0,
+      opened: 0,
+      createdAt: new Date().toISOString(),
+      templateId: draft.templateId || null,
+      deliveryAccountId: selectedAccount.id,
+      scheduledAt:
+        status === "scheduled"
+          ? new Date(draft.scheduledAt).toISOString()
+          : null,
+      textBody: htmlToText(draft.htmlBody),
+      htmlBody: sanitizeEmailHtml(draft.htmlBody),
+      recipientList: resolvedRecipients,
+    });
+    setComposerOpen(false);
+    addToast({
+      title:
+        status === "draft"
+          ? "Wersja robocza zapisana"
+          : status === "scheduled"
+            ? "Wysyłka zaplanowana"
+            : "Wiadomość dodana do kolejki",
+      message:
+        status === "scheduled"
+          ? `Start: ${formatDateTime(new Date(draft.scheduledAt).toISOString())}.`
+          : `${count} odbiorców przejdzie kontrolę limitów i duplikatów.`,
+      tone: "success",
+    });
+  };
+
+  const openTemplateManager = () => {
+    setSelectedTemplateDraft(
+      structuredClone(
+        templates.find((template) => template.id === draft.templateId) ??
+          templates[0] ??
+          blankTemplate(activeOrganizationId),
+      ),
+    );
+    setTemplateManagerOpen(true);
+  };
+
+  const saveTemplate = () => {
+    if (!selectedTemplateDraft) return;
+    const normalized: EmailTemplate = {
+      ...selectedTemplateDraft,
+      variables: extractVariables(
+        selectedTemplateDraft.subject,
+        selectedTemplateDraft.textBody,
+        selectedTemplateDraft.htmlBody,
+      ),
+      updatedAt: new Date().toISOString(),
+    };
+    const exists = templates.some((template) => template.id === normalized.id);
+    if (exists) updateTemplate(normalized.id, normalized);
+    else addTemplate(normalized);
+    selectTemplate(normalized.id);
+    setSelectedTemplateDraft(normalized);
+    addToast({
+      title: "Szablon zapisany",
+      message: `${normalized.name} jest dostępny w edytorze wiadomości.`,
+      tone: "success",
+    });
+  };
 
   return (
     <>
       <PageHeader
         actions={
-          <Button
-            icon={Plus}
-            onClick={() => setComposerOpen(true)}
-            variant="primary"
-          >
+          <Button icon={Plus} onClick={openComposer} variant="primary">
             Nowa wiadomość
           </Button>
         }
@@ -119,11 +431,17 @@ export function SendPage() {
                 value={search}
               />
             </label>
-            <select aria-label="Status wysyłki" defaultValue="all">
+            <select
+              aria-label="Status wysyłki"
+              onChange={(event) => setStatusFilter(event.target.value)}
+              value={statusFilter}
+            >
               <option value="all">Wszystkie statusy</option>
               <option value="draft">Wersje robocze</option>
               <option value="scheduled">Zaplanowane</option>
+              <option value="sending">W kolejce</option>
               <option value="sent">Wysłane</option>
+              <option value="failed">Błędy</option>
             </select>
           </div>
         </div>
@@ -165,6 +483,7 @@ export function SendPage() {
                       <button
                         aria-label={`Podgląd ${campaign.subject}`}
                         className="icon-button"
+                        onClick={() => setCampaignPreview(campaign)}
                         type="button"
                       >
                         <Eye size={16} />
@@ -179,26 +498,22 @@ export function SendPage() {
       </section>
 
       <Modal
-        description="Napisz wiadomość, wybierz odbiorców i przetestuj ją przed wysłaniem."
+        description="Wybierz odbiorców, zbuduj treść i sprawdź dokładny podgląd przed wysłaniem."
         footer={
           <>
-            <Button onClick={() => setComposerOpen(false)}>
+            <Button icon={Save} onClick={() => saveCampaign(true)}>
               Zapisz wersję roboczą
             </Button>
             <Button
-              icon={Send}
-              onClick={() => {
-                setComposerOpen(false);
-                addToast({
-                  title: "Wiadomość dodana do kolejki",
-                  message:
-                    "Wysyłka rozpocznie się po przejściu walidacji odbiorców.",
-                  tone: "success",
-                });
-              }}
+              icon={draft.mode === "schedule" ? CalendarClock : Send}
+              onClick={() => saveCampaign(false)}
               variant="primary"
             >
-              Wyślij wiadomość
+              {draft.mode === "schedule"
+                ? "Zaplanuj wysyłkę"
+                : draft.mode === "draft"
+                  ? "Zapisz"
+                  : "Wyślij wiadomość"}
             </Button>
           </>
         }
@@ -207,167 +522,625 @@ export function SendPage() {
         size="xl"
         title="Nowa wiadomość"
       >
-        <div className="composer-layout">
-          <div className="composer-form">
+        <div className="composer-shell">
+          <div className="composer-config">
             <div className="form-grid form-grid--two">
               <FormField label="Konto wysyłkowe">
-                <select defaultValue={sources[0]?.id}>
-                  {sources
-                    .filter((source) => source.type !== "scraper")
-                    .map((source) => (
-                      <option key={source.id} value={source.id}>
-                        {source.name} · {source.address}
-                      </option>
-                    ))}
+                <select
+                  disabled={!deliveryAccounts.length}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      accountId: event.target.value,
+                    }))
+                  }
+                  value={draft.accountId}
+                >
+                  {!deliveryAccounts.length ? (
+                    <option value="">Najpierw dodaj konto wysyłkowe</option>
+                  ) : null}
+                  {deliveryAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name} · {account.fromEmail}
+                    </option>
+                  ))}
                 </select>
               </FormField>
               <FormField label="Tryb wysyłki">
-                <select defaultValue="now">
+                <select
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      mode: event.target.value as ComposerDraft["mode"],
+                    }))
+                  }
+                  value={draft.mode}
+                >
                   <option value="now">Wyślij po zatwierdzeniu</option>
                   <option value="schedule">Zaplanuj termin</option>
                   <option value="draft">Tylko wersja robocza</option>
                 </select>
               </FormField>
-            </div>
-            <FormField label="Odbiorcy">
-              <div className="recipient-builder">
-                <span className="recipient-chip">
-                  <Users size={13} />
-                  Kategoria: {categories[0]?.name}
-                  <button aria-label="Usuń odbiorców" type="button">
-                    ×
-                  </button>
-                </span>
-                <input placeholder="Dodaj adres, kategorię lub segment..." />
-                <ChevronDown size={15} />
-              </div>
-            </FormField>
-            <div className="form-grid form-grid--two">
-              <FormField label="Temat">
-                <input defaultValue="Ważna informacja dotycząca Twojego zgłoszenia" />
-              </FormField>
-              <FormField label="Szablon">
-                <select defaultValue="notification">
-                  <option value="notification">Powiadomienie standardowe</option>
-                  <option value="support">Odpowiedź wsparcia</option>
-                  <option value="offer">Oferta handlowa</option>
-                  <option value="blank">Pusty szablon</option>
-                </select>
-              </FormField>
+              {draft.mode === "schedule" ? (
+                <FormField label="Data i godzina wysyłki">
+                  <input
+                    min={minimumScheduleAt}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        scheduledAt: event.target.value,
+                      }))
+                    }
+                    type="datetime-local"
+                    value={draft.scheduledAt}
+                  />
+                </FormField>
+              ) : null}
             </div>
 
-            <div className="editor-toolbar">
-              <button className="is-active" type="button">
-                B
-              </button>
-              <button type="button">
-                <i>I</i>
-              </button>
-              <button type="button">U</button>
-              <span />
-              <button type="button">H1</button>
-              <button type="button">H2</button>
-              <span />
-              <button type="button">Lista</button>
-              <button type="button">Link</button>
-              <button type="button">Zmienna</button>
+            <div className="audience-builder">
+              <FormField label="Typ odbiorców">
+                <select
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      audienceType: event.target
+                        .value as ComposerDraft["audienceType"],
+                    }))
+                  }
+                  value={draft.audienceType}
+                >
+                  <option value="category">Kategoria wiadomości</option>
+                  <option value="manual">Adresy ręczne</option>
+                  <option value="all">Wszyscy aktywni odbiorcy</option>
+                </select>
+              </FormField>
+              {draft.audienceType === "category" ? (
+                <FormField label="Kategoria / segment">
+                  <select
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        categoryId: event.target.value,
+                      }))
+                    }
+                    value={draft.categoryId}
+                  >
+                    {categories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                </FormField>
+              ) : null}
+              {draft.audienceType === "manual" ? (
+                <FormField
+                  hint="Oddziel adresy przecinkiem, średnikiem lub nową linią."
+                  label="Adresy e-mail"
+                >
+                  <textarea
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        recipients: event.target.value,
+                      }))
+                    }
+                    placeholder="anna@example.com, biuro@example.com"
+                    rows={2}
+                    value={draft.recipients}
+                  />
+                </FormField>
+              ) : null}
+              <div className="audience-count">
+                <Users size={17} />
+                <span>
+                  <strong>{formatNumber(recipientCount())}</strong>
+                  <small>szacowanych odbiorców</small>
+                </span>
+              </div>
             </div>
-            <div className="rich-editor" contentEditable suppressContentEditableWarning>
-              <h2>Dzień dobry,</h2>
-              <p>
-                przesyłamy ważną informację dotyczącą Twojego zgłoszenia.
-                Poniżej znajdziesz wszystkie potrzebne szczegóły.
-              </p>
-              <p>
-                <strong>Numer sprawy:</strong> {"{{message.reference}}"}
-              </p>
-              <p>
-                W razie pytań odpowiedz na tę wiadomość lub skontaktuj się z
-                naszym zespołem.
-              </p>
-            </div>
-            <div className="composer-options">
-              <label>
-                <input defaultChecked type="checkbox" />
-                Dodaj link rezygnacji
-              </label>
-              <label>
-                <input defaultChecked type="checkbox" />
-                Śledź dostarczenie i otwarcie
-              </label>
-              <label>
-                <input type="checkbox" />
-                Dołącz oryginalną wiadomość
-              </label>
+
+            <div className="form-grid form-grid--two">
+              <FormField label="Temat">
+                <input
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      subject: event.target.value,
+                    }))
+                  }
+                  value={draft.subject}
+                />
+              </FormField>
+              <FormField label="Szablon">
+                <div className="template-field">
+                  <select
+                    onChange={(event) => selectTemplate(event.target.value)}
+                    value={draft.templateId}
+                  >
+                    {templates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name} · v{template.version}
+                      </option>
+                    ))}
+                    <option value="">Pusty szablon</option>
+                  </select>
+                  <Button
+                    aria-label="Zarządzaj szablonami"
+                    icon={Settings2}
+                    onClick={openTemplateManager}
+                    size="sm"
+                  >
+                    Zarządzaj
+                  </Button>
+                </div>
+              </FormField>
             </div>
           </div>
 
-          <aside className="composer-preview">
-            <div className="composer-preview__tabs">
-              <button
-                className={previewMode === "editor" ? "is-active" : ""}
-                onClick={() => setPreviewMode("editor")}
-                type="button"
-              >
-                <FileText size={14} /> Edytor
-              </button>
-              <button
-                className={previewMode === "preview" ? "is-active" : ""}
-                onClick={() => setPreviewMode("preview")}
-                type="button"
-              >
-                <Eye size={14} /> Podgląd
-              </button>
-              <button
-                className={previewMode === "html" ? "is-active" : ""}
-                onClick={() => setPreviewMode("html")}
-                type="button"
-              >
-                <Code2 size={14} /> HTML
-              </button>
-            </div>
-            <div className="email-preview-card">
-              <header>
-                <span>MF</span>
-                <div>
-                  <strong>MailFlow Studio</strong>
-                  <small>support@acme.pl</small>
-                </div>
-              </header>
-              <main>
-                <h2>Dzień dobry,</h2>
-                <p>
-                  przesyłamy ważną informację dotyczącą Twojego zgłoszenia.
-                  Poniżej znajdziesz wszystkie potrzebne szczegóły.
-                </p>
-                <div className="email-info-box">
-                  <span>Numer sprawy</span>
-                  <strong>#MF-2026-0727</strong>
-                </div>
-                <p>
-                  W razie pytań odpowiedz na tę wiadomość lub skontaktuj się z
-                  naszym zespołem.
-                </p>
-                <a href="#preview">Otwórz szczegóły</a>
-              </main>
-              <footer>
-                MailFlow Studio · Automatyczne centrum komunikacji
-              </footer>
-            </div>
-            <div className="send-safety">
-              <CalendarClock size={17} />
+          <div className="composer-mode-tabs">
+            <button
+              className={composerMode === "editor" ? "is-active" : ""}
+              onClick={() => setComposerMode("editor")}
+              type="button"
+            >
+              <FileText size={15} /> Edytor
+            </button>
+            <button
+              className={composerMode === "preview" ? "is-active" : ""}
+              onClick={() => setComposerMode("preview")}
+              type="button"
+            >
+              <Eye size={15} /> Podgląd
+            </button>
+            <button
+              className={composerMode === "html" ? "is-active" : ""}
+              onClick={() => setComposerMode("html")}
+              type="button"
+            >
+              <Code2 size={15} /> HTML
+            </button>
+          </div>
+
+          {composerMode === "editor" ? (
+            <div className="composer-editor-workspace">
               <div>
-                <strong>Kontrola przed wysłaniem</strong>
-                <span>
-                  Duplikaty, wypisane adresy i limity SMTP zostaną sprawdzone
-                  automatycznie.
-                </span>
+                <div className="editor-toolbar">
+                  <button onClick={() => command("bold")} type="button">
+                    <strong>B</strong>
+                  </button>
+                  <button onClick={() => command("italic")} type="button">
+                    <i>I</i>
+                  </button>
+                  <button onClick={() => command("underline")} type="button">
+                    U
+                  </button>
+                  <span />
+                  <button
+                    onClick={() => command("formatBlock", "h1")}
+                    type="button"
+                  >
+                    H1
+                  </button>
+                  <button
+                    onClick={() => command("formatBlock", "h2")}
+                    type="button"
+                  >
+                    H2
+                  </button>
+                  <span />
+                  <button
+                    onClick={() => command("insertUnorderedList")}
+                    type="button"
+                  >
+                    Lista
+                  </button>
+                  <button
+                    onClick={() => setLinkEditorOpen((value) => !value)}
+                    type="button"
+                  >
+                    Link
+                  </button>
+                  <button
+                    onClick={() =>
+                      command("insertText", "{{recipient.name}}")
+                    }
+                    type="button"
+                  >
+                    Zmienna
+                  </button>
+                </div>
+                {linkEditorOpen ? (
+                  <div className="link-editor-popover">
+                    <input
+                      aria-label="Adres linku"
+                      onChange={(event) => setLinkUrl(event.target.value)}
+                      placeholder="https://example.com"
+                      type="url"
+                      value={linkUrl}
+                    />
+                    <Button
+                      onClick={() => {
+                        if (!/^https?:\/\//i.test(linkUrl)) {
+                          addToast({
+                            title: "Nieprawidłowy link",
+                            message: "Adres musi zaczynać się od http:// lub https://.",
+                            tone: "warning",
+                          });
+                          return;
+                        }
+                        command("createLink", linkUrl);
+                        setLinkEditorOpen(false);
+                      }}
+                      size="sm"
+                      variant="primary"
+                    >
+                      Wstaw link
+                    </Button>
+                  </div>
+                ) : null}
+                <div
+                  className="rich-editor"
+                  contentEditable
+                  dangerouslySetInnerHTML={{ __html: draft.htmlBody }}
+                  key={`${draft.templateId}-${composerOpen}`}
+                  onInput={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      htmlBody: sanitizeEmailHtml(
+                        event.currentTarget.innerHTML,
+                      ),
+                    }))
+                  }
+                  ref={editorRef}
+                  suppressContentEditableWarning
+                />
+              </div>
+              <aside className="variable-rail">
+                <h3>Zmienne w treści</h3>
+                <p>Kliknij, aby wstawić w miejscu kursora.</p>
+                {[
+                  "recipient.name",
+                  "recipient.email",
+                  "message.reference",
+                  "message.summary",
+                  "action.url",
+                  "agent.name",
+                  "company.name",
+                ].map((variable) => (
+                  <button
+                    key={variable}
+                    onClick={() => command("insertText", `{{${variable}}}`)}
+                    type="button"
+                  >
+                    {`{{${variable}}}`}
+                  </button>
+                ))}
+              </aside>
+            </div>
+          ) : null}
+
+          {composerMode === "preview" ? (
+            <div className="composer-live-preview">
+              <iframe
+                sandbox=""
+                srcDoc={previewDocument}
+                title="Podgląd wiadomości e-mail"
+              />
+              <div className="send-safety">
+                <CalendarClock size={17} />
+                <div>
+                  <strong>Kontrola przed wysłaniem</strong>
+                  <span>
+                    Duplikaty, wypisane adresy i limity konta zostaną sprawdzone
+                    w kolejce odbiorców.
+                  </span>
+                </div>
               </div>
             </div>
-          </aside>
+          ) : null}
+
+          {composerMode === "html" ? (
+            <div className="html-editor-pane">
+              <div className="html-editor-pane__header">
+                <div>
+                  <h3>Kod HTML wiadomości</h3>
+                  <p>Skrypty, formularze i niebezpieczne atrybuty są usuwane.</p>
+                </div>
+                <Button
+                  icon={Copy}
+                  onClick={() =>
+                    void navigator.clipboard.writeText(draft.htmlBody)
+                  }
+                  size="sm"
+                >
+                  Kopiuj
+                </Button>
+              </div>
+              <textarea
+                className="code-textarea"
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    htmlBody: event.target.value,
+                  }))
+                }
+                rows={18}
+                spellCheck={false}
+                value={draft.htmlBody}
+              />
+            </div>
+          ) : null}
+
+          <div className="composer-options">
+            <label>
+              <input
+                checked={draft.includeUnsubscribe}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    includeUnsubscribe: event.target.checked,
+                  }))
+                }
+                type="checkbox"
+              />
+              Dodaj link rezygnacji
+            </label>
+            <label>
+              <input
+                checked={draft.trackDelivery}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    trackDelivery: event.target.checked,
+                  }))
+                }
+                type="checkbox"
+              />
+              Śledź dostarczenie i otwarcie
+            </label>
+            <label>
+              <input
+                checked={draft.includeOriginal}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    includeOriginal: event.target.checked,
+                  }))
+                }
+                type="checkbox"
+              />
+              Dołącz oryginalną wiadomość
+            </label>
+          </div>
         </div>
+      </Modal>
+
+      <Drawer
+        footer={
+          <>
+            <Button onClick={() => setTemplateManagerOpen(false)}>
+              Zamknij
+            </Button>
+            <Button
+              icon={Save}
+              onClick={saveTemplate}
+              variant="primary"
+            >
+              Zapisz szablon
+            </Button>
+          </>
+        }
+        onClose={() => setTemplateManagerOpen(false)}
+        open={templateManagerOpen}
+        subtitle="Twórz wersjonowane treści używane w ręcznych i automatycznych wysyłkach."
+        size="lg"
+        title="Szablony wiadomości"
+      >
+        <div className="template-manager">
+          <div className="template-manager__list">
+            <Button
+              icon={Plus}
+              onClick={() =>
+                setSelectedTemplateDraft(
+                  blankTemplate(activeOrganizationId),
+                )
+              }
+              size="sm"
+              variant="primary"
+            >
+              Nowy szablon
+            </Button>
+            {templates.map((template) => (
+              <button
+                className={
+                  selectedTemplateDraft?.id === template.id
+                    ? "is-selected"
+                    : ""
+                }
+                key={template.id}
+                onClick={() =>
+                  setSelectedTemplateDraft(structuredClone(template))
+                }
+                type="button"
+              >
+                <LayoutTemplate size={17} />
+                <span>
+                  <strong>{template.name}</strong>
+                  <small>
+                    {template.kind} · v{template.version}
+                  </small>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {selectedTemplateDraft ? (
+            <div className="template-manager__editor">
+              <div className="form-grid form-grid--two">
+                <FormField label="Nazwa">
+                  <input
+                    onChange={(event) =>
+                      setSelectedTemplateDraft((current) =>
+                        current
+                          ? { ...current, name: event.target.value }
+                          : current,
+                      )
+                    }
+                    value={selectedTemplateDraft.name}
+                  />
+                </FormField>
+                <FormField label="Rodzaj">
+                  <select
+                    onChange={(event) =>
+                      setSelectedTemplateDraft((current) =>
+                        current
+                          ? {
+                              ...current,
+                              kind: event.target.value as TemplateKind,
+                            }
+                          : current,
+                      )
+                    }
+                    value={selectedTemplateDraft.kind}
+                  >
+                    <option value="notification">Powiadomienie</option>
+                    <option value="support">Obsługa klienta</option>
+                    <option value="sales">Sprzedaż</option>
+                    <option value="transactional">Transakcyjny</option>
+                    <option value="blank">Pusty</option>
+                  </select>
+                </FormField>
+              </div>
+              <FormField label="Opis">
+                <input
+                  onChange={(event) =>
+                    setSelectedTemplateDraft((current) =>
+                      current
+                        ? { ...current, description: event.target.value }
+                        : current,
+                    )
+                  }
+                  value={selectedTemplateDraft.description}
+                />
+              </FormField>
+              <FormField label="Temat">
+                <input
+                  onChange={(event) =>
+                    setSelectedTemplateDraft((current) =>
+                      current
+                        ? { ...current, subject: event.target.value }
+                        : current,
+                    )
+                  }
+                  value={selectedTemplateDraft.subject}
+                />
+              </FormField>
+              <FormField label="HTML">
+                <textarea
+                  className="code-textarea"
+                  onChange={(event) =>
+                    setSelectedTemplateDraft((current) =>
+                      current
+                        ? { ...current, htmlBody: event.target.value }
+                        : current,
+                    )
+                  }
+                  rows={12}
+                  value={selectedTemplateDraft.htmlBody}
+                />
+              </FormField>
+              <div className="template-variable-list">
+                <strong>Wykryte zmienne</strong>
+                <div>
+                  {extractVariables(
+                    selectedTemplateDraft.subject,
+                    selectedTemplateDraft.htmlBody,
+                  ).map((variable) => (
+                    <code key={variable}>{`{{${variable}}}`}</code>
+                  ))}
+                </div>
+              </div>
+              {!selectedTemplateDraft.id.startsWith("template-") ||
+              templates.some(
+                (template) => template.id === selectedTemplateDraft.id,
+              ) ? (
+                <Button
+                  icon={Trash2}
+                  onClick={() => {
+                    removeTemplate(selectedTemplateDraft.id);
+                    setSelectedTemplateDraft(
+                      templates.find(
+                        (template) =>
+                          template.id !== selectedTemplateDraft.id,
+                      ) ?? null,
+                    );
+                  }}
+                  size="sm"
+                  variant="danger"
+                >
+                  Usuń szablon
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </Drawer>
+
+      <Modal
+        description="Treść, odbiorcy i stan konkretnej wysyłki."
+        footer={
+          <Button onClick={() => setCampaignPreview(null)}>Zamknij</Button>
+        }
+        onClose={() => setCampaignPreview(null)}
+        open={Boolean(campaignPreview)}
+        size="lg"
+        title="Szczegóły wysyłki"
+      >
+        {campaignPreview ? (
+          <div className="campaign-detail">
+            <dl>
+              <div>
+                <dt>Temat</dt>
+                <dd>{campaignPreview.subject}</dd>
+              </div>
+              <div>
+                <dt>Nadawca</dt>
+                <dd>{campaignPreview.sender}</dd>
+              </div>
+              <div>
+                <dt>Odbiorcy</dt>
+                <dd>
+                  {campaignPreview.audience} ·{" "}
+                  {formatNumber(campaignPreview.recipients)}
+                </dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>{campaignStatus[campaignPreview.status].label}</dd>
+              </div>
+            </dl>
+            {campaignPreview.htmlBody ? (
+              <iframe
+                sandbox=""
+                srcDoc={emailPreviewDocument({
+                  html: campaignPreview.htmlBody,
+                  subject: campaignPreview.subject,
+                  senderName: campaignPreview.sender,
+                  senderEmail: campaignPreview.sender,
+                })}
+                title={`Podgląd ${campaignPreview.subject}`}
+              />
+            ) : (
+              <div className="empty-workspace">
+                <Edit3 size={24} />
+                <p>Starsza wysyłka nie ma zachowanej treści demonstracyjnej.</p>
+              </div>
+            )}
+          </div>
+        ) : null}
       </Modal>
     </>
   );
 }
-

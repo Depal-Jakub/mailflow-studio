@@ -8,6 +8,7 @@ export function Drawer({
   children,
   footer,
   onClose,
+  size = "md",
 }: {
   open: boolean;
   title: string;
@@ -15,6 +16,7 @@ export function Drawer({
   children: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
+  size?: "md" | "lg";
 }) {
   useEffect(() => {
     if (!open) return undefined;
@@ -31,7 +33,7 @@ export function Drawer({
     <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}>
       <aside
         aria-modal="true"
-        className="drawer"
+        className={`drawer drawer--${size}`}
         onMouseDown={(event) => event.stopPropagation()}
         role="dialog"
       >
@@ -55,4 +57,3 @@ export function Drawer({
     </div>
   );
 }
-

@@ -17,6 +17,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useSearchParams } from "react-router";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
@@ -83,13 +84,65 @@ const createCondition = (): RuleCondition => ({
   value: "",
 });
 
+const emptyRule: AutomationRule = {
+  id: "new-rule",
+  name: "Nowa reguła",
+  description: "Nowa reguła do skonfigurowania.",
+  categoryId: null,
+  priority: 50,
+  active: false,
+  matchMode: "all",
+  conditions: [
+    {
+      id: "new-condition",
+      field: "subject",
+      operator: "contains",
+      value: "",
+    },
+  ],
+  actions: [],
+  hits: 0,
+  version: 0,
+  updatedAt: "2026-07-27T00:00:00+02:00",
+  updatedBy: "System",
+};
+
+const emptyMessage = {
+  id: "sample-message",
+  sender: "nadawca@example.com",
+  senderName: "Przykładowy nadawca",
+  recipient: "inbox@example.com",
+  subject: "Przykładowa wiadomość",
+  preview: "",
+  body: "",
+  receivedAt: "2026-07-27T00:00:00+02:00",
+  status: "new" as const,
+  categoryId: null,
+  score: 0,
+  sourceId: "sample-source",
+  direction: "incoming" as const,
+  tags: [],
+  hasAttachments: false,
+  attachmentNames: [],
+  matchedRuleIds: [],
+};
+
 export function RulesPage() {
   const { rules, categories, messages, updateRule, addRule, addToast } =
     useAppState();
-  const [selectedRuleId, setSelectedRuleId] = useState(rules[0]?.id ?? "");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const categoryFilter = searchParams.get("category");
+  const [selectedRuleId, setSelectedRuleId] = useState(
+    () =>
+      rules.find((rule) => rule.categoryId === categoryFilter)?.id ??
+      rules[0]?.id ??
+      "",
+  );
   const selectedRule =
     rules.find((rule) => rule.id === selectedRuleId) ?? rules[0];
-  const [draft, setDraft] = useState<AutomationRule>(selectedRule);
+  const [draft, setDraft] = useState<AutomationRule>(
+    selectedRule ?? emptyRule,
+  );
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [testMessageId, setTestMessageId] = useState(messages[0]?.id ?? "");
@@ -104,6 +157,7 @@ export function RulesPage() {
   const filteredRules = useMemo(() => {
     const normalized = query.toLocaleLowerCase("pl").trim();
     return rules.filter((rule) => {
+      if (categoryFilter && rule.categoryId !== categoryFilter) return false;
       if (statusFilter === "active" && !rule.active) return false;
       if (statusFilter === "inactive" && rule.active) return false;
       return [rule.name, rule.description]
@@ -111,17 +165,17 @@ export function RulesPage() {
         .toLocaleLowerCase("pl")
         .includes(normalized);
     });
-  }, [query, rules, statusFilter]);
+  }, [categoryFilter, query, rules, statusFilter]);
 
   const testMessage =
     messages.find((message) => message.id === testMessageId) ?? messages[0];
   const evaluation = useMemo(
-    () => evaluateRule(testMessage, draft),
+    () => evaluateRule(testMessage ?? emptyMessage, draft),
     [draft, testMessage],
   );
   const calculatedScore = Math.min(
     100,
-    Math.max(0, testMessage.score + evaluation.scoreDelta),
+    Math.max(0, (testMessage?.score ?? 0) + evaluation.scoreDelta),
   );
 
   const updateCondition = (
@@ -151,7 +205,8 @@ export function RulesPage() {
   };
 
   const saveDraft = (activate: boolean) => {
-    const nextVersion = Math.max(draft.version, selectedRule.version) + 1;
+    const nextVersion =
+      Math.max(draft.version, selectedRule?.version ?? draft.version) + 1;
     const patch = {
       ...draft,
       active: activate ? true : draft.active,
@@ -197,6 +252,69 @@ export function RulesPage() {
     selectRule(rule);
   };
 
+  if (!selectedRule) {
+    return (
+      <div className="rules-page">
+        <div className="rules-toolbar">
+          <div>
+            <h1>Reguły i scoring</h1>
+            <p>Buduj warunki, wyniki i akcje bez pisania kodu.</p>
+          </div>
+          <Button
+            icon={Plus}
+            onClick={() => setNewRuleOpen(true)}
+            size="sm"
+            variant="primary"
+          >
+            Nowa reguła
+          </Button>
+        </div>
+        <section className="panel empty-state">
+          <GitBranch size={30} />
+          <strong>Ta organizacja nie ma jeszcze reguł</strong>
+          <span>
+            Utwórz pierwszą regułę, aby automatycznie klasyfikować wiadomości.
+          </span>
+          <Button
+            icon={Plus}
+            onClick={() => setNewRuleOpen(true)}
+            variant="primary"
+          >
+            Utwórz pierwszą regułę
+          </Button>
+        </section>
+        <Modal
+          description="Zaczniemy od jednego warunku i akcji. Wszystko można później rozbudować."
+          footer={
+            <>
+              <Button onClick={() => setNewRuleOpen(false)}>Anuluj</Button>
+              <Button
+                disabled={!newRuleName.trim()}
+                onClick={createRule}
+                variant="primary"
+              >
+                Utwórz regułę
+              </Button>
+            </>
+          }
+          onClose={() => setNewRuleOpen(false)}
+          open={newRuleOpen}
+          title="Nowa reguła"
+        >
+          <label className="form-field">
+            <span className="form-field__label">Nazwa reguły</span>
+            <input
+              autoFocus
+              onChange={(event) => setNewRuleName(event.target.value)}
+              placeholder="np. Pilne zapytania od kluczowych klientów"
+              value={newRuleName}
+            />
+          </label>
+        </Modal>
+      </div>
+    );
+  }
+
   return (
     <div className="rules-page">
       <div className="rules-toolbar">
@@ -205,7 +323,32 @@ export function RulesPage() {
           <p>Buduj warunki, wyniki i akcje bez pisania kodu.</p>
         </div>
         <div className="rules-toolbar__actions">
-          <Button icon={Beaker} size="sm">
+          {categoryFilter ? (
+            <Button
+              icon={X}
+              onClick={() => {
+                searchParams.delete("category");
+                setSearchParams(searchParams);
+              }}
+              size="sm"
+            >
+              Wyczyść kategorię
+            </Button>
+          ) : null}
+          <Button
+            icon={Beaker}
+            onClick={() => {
+              const matching = messages.filter((message) =>
+                rules.some((rule) => evaluateRule(message, rule).matched),
+              ).length;
+              addToast({
+                title: "Test zestawu zakończony",
+                message: `${matching} z ${messages.length} wiadomości pasuje do co najmniej jednej aktywnej reguły.`,
+                tone: "success",
+              });
+            }}
+            size="sm"
+          >
             Testuj zestaw
           </Button>
           <Button

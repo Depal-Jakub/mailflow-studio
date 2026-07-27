@@ -1,0 +1,54 @@
+name: Zgłoszenie błędu
+description: Zgłoś odtwarzalny błąd aplikacji lub integracji.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Nie wklejaj sekretów, tokenów OAuth ani danych prawdziwych wiadomości.
+        Podatności zgłaszaj prywatnie zgodnie z SECURITY.md.
+  - type: input
+    id: area
+    attributes:
+      label: Moduł
+      placeholder: np. źródła, reguły, API, wysyłka
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Opis
+      description: Co się stało i czego oczekiwano?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Kroki odtworzenia
+      placeholder: |
+        1. Otwórz...
+        2. Wybierz...
+        3. Zobacz błąd...
+    validations:
+      required: true
+  - type: input
+    id: request_id
+    attributes:
+      label: Request ID lub identyfikator rekordu
+      description: Podaj identyfikator bez treści wiadomości i sekretów.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Środowisko
+      placeholder: przeglądarka, wersja, staging/produkcja, provider
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Kontrola
+      options:
+        - label: Usunąłem ze zgłoszenia sekrety i dane osobowe.
+          required: true

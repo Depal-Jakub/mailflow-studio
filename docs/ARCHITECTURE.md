@@ -10,8 +10,10 @@ flowchart LR
   D --> E["Kategoria, score, tagi lub review"]
   D --> F["Kolejka scrapingu"]
   D --> G["Kolejka akcji"]
+  D --> M["Kolejka automatyzacji"]
   F --> H["Treść i metadane stron"]
   G --> I["Webhook, zadanie lub wiadomość wychodząca"]
+  M --> G
   I --> J["Kolejka odbiorców"]
   J --> K["SMTP / Gmail / Outlook / SendGrid / Resend"]
   K --> L["Status każdego odbiorcy i raport"]

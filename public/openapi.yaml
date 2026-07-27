@@ -1,0 +1,1090 @@
+openapi: 3.1.0
+info:
+  title: MailFlow Studio Public API
+  version: 1.0.0
+  summary: Organization-scoped API for messages, classification and delivery
+  description: |
+    Publiczne API MailFlow Studio służy do bezpiecznego pobierania i dodawania
+    wiadomości, zarządzania kategoriami, uruchamiania synchronizacji oraz
+    tworzenia wysyłek.
+
+    Klucz API jest przypisany do jednej organizacji. Serwer nigdy nie przyjmuje
+    `organization_id` od klienta i izoluje dane na podstawie hasha klucza.
+    Pełna wartość klucza jest wyświetlana tylko podczas utworzenia lub rotacji.
+
+    Wszystkie odpowiedzi zawierają `x-request-id`. Odpowiedzi autoryzowane
+    zawierają również `x-ratelimit-remaining` i `x-ratelimit-reset`.
+  contact:
+    name: MailFlow Studio API
+    url: https://github.com/Depal-Jakub/mailflow-studio
+  license:
+    name: Proprietary
+servers:
+  - url: /v1
+    description: Bieżące środowisko
+tags:
+  - name: System
+    description: Stan usługi i endpointy niewymagające uwierzytelnienia.
+  - name: Identity
+    description: Tożsamość organizacji i uprawnienia bieżącego klucza.
+  - name: Messages
+    description: Odbiór, ingest, wyszukiwanie i klasyfikacja wiadomości.
+  - name: Categories
+    description: Taksonomia używana przez reguły i proces ręcznej oceny.
+  - name: Sources
+    description: Źródła danych oraz ręczne uruchamianie synchronizacji.
+  - name: Templates
+    description: Aktywne szablony treści dostępne w organizacji.
+  - name: Outbound
+    description: Kampanie, odbiorcy i stan wysyłek wychodzących.
+  - name: Audit
+    description: Niezmienny dziennik operacji wykonywanych w organizacji.
+security:
+  - bearerAuth: []
+  - apiKeyHeader: []
+paths:
+  /health:
+    get:
+      tags: [System]
+      operationId: getHealth
+      summary: Stan publicznego API
+      security: []
+      responses:
+        "200":
+          description: API działa
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /me:
+    get:
+      tags: [Identity]
+      operationId: getApiIdentity
+      summary: Organizacja i zakresy bieżącego klucza
+      responses:
+        "200":
+          description: Tożsamość klucza
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [organization_id, api_key]
+                        properties:
+                          organization_id:
+                            type: string
+                            format: uuid
+                          api_key:
+                            type: object
+                            required: [id, name, scopes]
+                            properties:
+                              id:
+                                type: string
+                                format: uuid
+                              name:
+                                type: string
+                              scopes:
+                                type: array
+                                items:
+                                  $ref: "#/components/schemas/Scope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /messages:
+    get:
+      tags: [Messages]
+      operationId: listMessages
+      summary: Lista wiadomości
+      description: Wymaga zakresu `messages:read`. Paginacja jest kursorowa.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/MessageStatus"
+        - name: direction
+          in: query
+          schema:
+            type: string
+            enum: [incoming, outgoing]
+        - name: category_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: source_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: search
+          in: query
+          description: Wyszukiwanie pełnotekstowe w indeksie wiadomości.
+          schema:
+            type: string
+            maxLength: 300
+      responses:
+        "200":
+          description: Strona wiadomości
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [items, next_cursor]
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/MessageSummary"
+                          next_cursor:
+                            type: [string, "null"]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    post:
+      tags: [Messages]
+      operationId: ingestMessage
+      summary: Dodaj wiadomość do potoku
+      description: |
+        Wymaga zakresu `messages:write`. Operacja jest idempotentna względem
+        `external_id`; można przekazać go również w nagłówku `Idempotency-Key`.
+        Ponowne żądanie zwraca istniejącą wiadomość z `created: false`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+            maxLength: 500
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MessageIngest"
+      responses:
+        "201":
+          description: Utworzono wiadomość
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageIngestResponse"
+        "200":
+          description: Zwrócono istniejącą wiadomość
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageIngestResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /messages/{messageId}:
+    parameters:
+      - $ref: "#/components/parameters/MessageId"
+    get:
+      tags: [Messages]
+      operationId: getMessage
+      summary: Pełne dane wiadomości
+      description: Wymaga zakresu `messages:read`.
+      responses:
+        "200":
+          description: Wiadomość z załącznikami i wynikami reguł
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/MessageDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Messages]
+      operationId: updateMessage
+      summary: Zaktualizuj klasyfikację wiadomości
+      description: Wymaga zakresu `messages:write`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                status:
+                  $ref: "#/components/schemas/MessageStatus"
+                category_id:
+                  type: [string, "null"]
+                  format: uuid
+                score:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                review_reason:
+                  type: [string, "null"]
+                  maxLength: 2000
+                review_assignee_id:
+                  type: [string, "null"]
+                  format: uuid
+                tags:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Zaktualizowana klasyfikacja
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericSuccessResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /categories:
+    get:
+      tags: [Categories]
+      operationId: listCategories
+      summary: Lista kategorii
+      description: Wymaga zakresu `categories:read`.
+      responses:
+        "200":
+          description: Kategorie organizacji
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Category"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Categories]
+      operationId: createCategory
+      summary: Utwórz kategorię
+      description: Wymaga zakresu `categories:write`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CategoryInput"
+      responses:
+        "201":
+          description: Utworzona kategoria
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Category"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /categories/{categoryId}:
+    parameters:
+      - $ref: "#/components/parameters/CategoryId"
+    patch:
+      tags: [Categories]
+      operationId: updateCategory
+      summary: Zmień kategorię
+      description: Wymaga zakresu `categories:write`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CategoryPatch"
+      responses:
+        "200":
+          description: Zaktualizowana kategoria
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Category"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Categories]
+      operationId: deleteCategory
+      summary: Usuń kategorię
+      description: Wymaga zakresu `categories:write`.
+      responses:
+        "200":
+          description: Kategoria usunięta
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericSuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /sources:
+    get:
+      tags: [Sources]
+      operationId: listSources
+      summary: Lista źródeł danych
+      description: Wymaga zakresu `sources:read`. Sekrety nigdy nie są zwracane.
+      responses:
+        "200":
+          description: Publiczna konfiguracja źródeł
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Source"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /sources/{sourceId}/sync:
+    parameters:
+      - $ref: "#/components/parameters/SourceId"
+    post:
+      tags: [Sources]
+      operationId: synchronizeSource
+      summary: Zaplanuj synchronizację źródła
+      description: Wymaga zakresu `sources:sync`. Webhooków nie synchronizuje się ręcznie.
+      responses:
+        "202":
+          description: Synchronizacja została ustawiona jako gotowa do wykonania
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericSuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /templates:
+    get:
+      tags: [Templates]
+      operationId: listTemplates
+      summary: Lista aktywnych szablonów
+      description: Wymaga zakresu `templates:read`.
+      responses:
+        "200":
+          description: Szablony organizacji
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Template"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /outbound-messages:
+    get:
+      tags: [Outbound]
+      operationId: listOutboundMessages
+      summary: Historia wysyłek
+      description: Wymaga zakresu `outbound:read`.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Wysyłki organizacji
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/OutboundSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Outbound]
+      operationId: createOutboundMessage
+      summary: Utwórz wysyłkę
+      description: |
+        Wymaga zakresu `outbound:write`. Kampania i zdeduplikowani odbiorcy są
+        zapisywani atomowo w jednej transakcji. Status `pending` uruchamia
+        worker jak najszybciej, a `scheduled` wymaga przyszłego `scheduled_at`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OutboundInput"
+      responses:
+        "201":
+          description: Utworzona wysyłka
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OutboundSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+  /outbound-messages/{outboundId}:
+    parameters:
+      - $ref: "#/components/parameters/OutboundId"
+    get:
+      tags: [Outbound]
+      operationId: getOutboundMessage
+      summary: Wysyłka i statusy odbiorców
+      description: Wymaga zakresu `outbound:read`.
+      responses:
+        "200":
+          description: Pełna wysyłka
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericSuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /audit:
+    get:
+      tags: [Audit]
+      operationId: listAuditEvents
+      summary: Dziennik audytu organizacji
+      description: Wymaga zakresu `audit:read`.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Zdarzenia audytowe
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/AuditEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: MailFlow API key
+      description: "Authorization: Bearer mfs_live_..."
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Liczba rekordów na stronę.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      description: Nieprzezroczysty kursor zwrócony jako `next_cursor`.
+      schema:
+        type: string
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CategoryId:
+      name: categoryId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SourceId:
+      name: sourceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    OutboundId:
+      name: outboundId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequest:
+      description: Nieprawidłowe dane wejściowe
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Unauthorized:
+      description: Brak, błędny, wygasły lub unieważniony klucz
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Forbidden:
+      description: Brak zakresu albo adres IP poza allowlistą
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: Rekord nie istnieje w organizacji klucza
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    PayloadTooLarge:
+      description: Treść większa niż 1 MB
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    RateLimited:
+      description: Przekroczono limit klucza w bieżącej minucie
+      headers:
+        x-ratelimit-reset:
+          schema:
+            type: integer
+          description: Unix timestamp końca okna.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    Scope:
+      type: string
+      enum:
+        - messages:read
+        - messages:write
+        - categories:read
+        - categories:write
+        - sources:read
+        - sources:sync
+        - templates:read
+        - outbound:read
+        - outbound:write
+        - audit:read
+        - "*"
+    MessageStatus:
+      type: string
+      enum: [new, classified, review, automated, failed, archived]
+    SuccessEnvelope:
+      type: object
+      required: [ok, data, request_id]
+      properties:
+        ok:
+          const: true
+        data: {}
+        request_id:
+          type: string
+          format: uuid
+    GenericSuccessResponse:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      required: [ok, error, request_id]
+      properties:
+        ok:
+          const: false
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              examples: [invalid_api_key, scope_missing, rate_limit_exceeded]
+            message:
+              type: string
+            details: {}
+        request_id:
+          type: string
+          format: uuid
+    HealthResponse:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [service, version, timestamp]
+              properties:
+                service:
+                  const: mailflow-public-api
+                version:
+                  const: v1
+                timestamp:
+                  type: string
+                  format: date-time
+    MessageSummary:
+      type: object
+      required:
+        - id
+        - external_id
+        - direction
+        - sender_email
+        - recipients
+        - subject
+        - received_at
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        external_id:
+          type: string
+        thread_id:
+          type: [string, "null"]
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+        sender_email:
+          type: string
+          format: email
+        sender_name:
+          type: [string, "null"]
+        recipients:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        subject:
+          type: string
+        preview:
+          type: [string, "null"]
+        received_at:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/MessageStatus"
+        score:
+          type: integer
+        review_reason:
+          type: [string, "null"]
+        tags:
+          type: array
+          items:
+            type: string
+        processed_at:
+          type: [string, "null"]
+          format: date-time
+        category:
+          anyOf:
+            - $ref: "#/components/schemas/Category"
+            - type: "null"
+        source:
+          anyOf:
+            - $ref: "#/components/schemas/SourceReference"
+            - type: "null"
+    MessageDetail:
+      allOf:
+        - $ref: "#/components/schemas/MessageSummary"
+        - type: object
+          additionalProperties: true
+          properties:
+            body_text:
+              type: [string, "null"]
+            body_html:
+              type: [string, "null"]
+            headers:
+              type: object
+              additionalProperties: true
+            attachments:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            rule_matches:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+    MessageIngest:
+      type: object
+      required: [sender_email]
+      additionalProperties: false
+      properties:
+        external_id:
+          type: string
+          maxLength: 500
+        source_id:
+          type: [string, "null"]
+          format: uuid
+        thread_id:
+          type: [string, "null"]
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+          default: incoming
+        sender_email:
+          type: string
+          format: email
+        sender_name:
+          type: [string, "null"]
+        recipients:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: true
+        subject:
+          type: string
+          maxLength: 2000
+        preview:
+          type: string
+        body_text:
+          type: [string, "null"]
+        body_html:
+          type: [string, "null"]
+        headers:
+          type: object
+          additionalProperties: true
+        received_at:
+          type: string
+          format: date-time
+        tags:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+    MessageIngestResponse:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [created, message]
+              properties:
+                created:
+                  type: boolean
+                message:
+                  $ref: "#/components/schemas/MessageSummary"
+    Category:
+      type: object
+      required: [id, organization_id, name, slug, color, active]
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          format: uuid
+        organization_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: [string, "null"]
+        color:
+          type: string
+        icon:
+          type: [string, "null"]
+        default_score:
+          type: integer
+          minimum: -100
+          maximum: 100
+        active:
+          type: boolean
+    CategoryInput:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        slug:
+          type: string
+        description:
+          type: string
+        color:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        icon:
+          type: string
+        default_score:
+          type: integer
+          minimum: -100
+          maximum: 100
+        active:
+          type: boolean
+    CategoryPatch:
+      allOf:
+        - $ref: "#/components/schemas/CategoryInput"
+        - type: object
+          required: []
+    SourceReference:
+      type: object
+      required: [id, name, type]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+          enum: [gmail, outlook, imap, webhook, scraper]
+    Source:
+      allOf:
+        - $ref: "#/components/schemas/SourceReference"
+        - type: object
+          additionalProperties: true
+          properties:
+            address:
+              type: [string, "null"]
+            status:
+              type: string
+              enum: [active, warning, error, paused]
+            sync_interval_minutes:
+              type: integer
+            folders:
+              type: array
+              items:
+                type: string
+            public_config:
+              type: object
+              additionalProperties: true
+            last_sync_at:
+              type: [string, "null"]
+              format: date-time
+            next_sync_at:
+              type: [string, "null"]
+              format: date-time
+            last_error:
+              type: [string, "null"]
+    Template:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        kind:
+          type: string
+        subject_template:
+          type: string
+        text_template:
+          type: [string, "null"]
+        html_template:
+          type: [string, "null"]
+        variables:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+        version:
+          type: integer
+    RecipientInput:
+      oneOf:
+        - type: string
+          format: email
+        - type: object
+          required: [email]
+          additionalProperties: false
+          properties:
+            email:
+              type: string
+              format: email
+            name:
+              type: [string, "null"]
+            variables:
+              type: object
+              additionalProperties: true
+    OutboundInput:
+      type: object
+      required: [subject, recipients]
+      additionalProperties: false
+      properties:
+        delivery_account_id:
+          type: [string, "null"]
+          format: uuid
+        template_id:
+          type: [string, "null"]
+          format: uuid
+        source_message_id:
+          type: [string, "null"]
+          format: uuid
+        subject:
+          type: string
+          maxLength: 2000
+        text_body:
+          type: [string, "null"]
+        html_body:
+          type: [string, "null"]
+        status:
+          type: string
+          enum: [draft, pending, scheduled]
+          default: draft
+        scheduled_at:
+          type: [string, "null"]
+          format: date-time
+        recipients:
+          type: array
+          minItems: 1
+          maxItems: 10000
+          items:
+            $ref: "#/components/schemas/RecipientInput"
+    OutboundSummary:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          format: uuid
+        subject:
+          type: string
+        status:
+          type: string
+        scheduled_at:
+          type: [string, "null"]
+          format: date-time
+        recipient_count:
+          type: integer
+        delivered_count:
+          type: integer
+        failed_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+    AuditEvent:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor_type:
+          type: string
+          enum: [user, system, api]
+        action:
+          type: string
+        target_type:
+          type: [string, "null"]
+        target_id:
+          type: [string, "null"]
+          format: uuid
+        target_label:
+          type: [string, "null"]
+        severity:
+          type: string
+          enum: [info, success, warning, error]
+        ip_address:
+          type: [string, "null"]
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time

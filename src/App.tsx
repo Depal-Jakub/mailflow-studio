@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import { AuthGate } from "./components/auth/AuthGate";
 import { AppShell } from "./components/layout/AppShell";
+import { AppStateProvider } from "./lib/AppStateProvider";
 
 const AccountsPage = lazy(() =>
   import("./pages/AccountsPage").then((module) => ({
@@ -26,6 +27,11 @@ const CategoriesPage = lazy(() =>
 const DashboardPage = lazy(() =>
   import("./pages/DashboardPage").then((module) => ({
     default: module.DashboardPage,
+  })),
+);
+const DevelopersPage = lazy(() =>
+  import("./pages/DevelopersPage").then((module) => ({
+    default: module.DevelopersPage,
   })),
 );
 const MessagesPage = lazy(() =>
@@ -72,33 +78,36 @@ const UsersPage = lazy(() =>
 export default function App() {
   return (
     <AuthGate>
-      <Suspense
-        fallback={
-          <div className="route-loader">
-            <span />
-            <strong>Ładowanie modułu...</strong>
-          </div>
-        }
-      >
-        <Routes>
-          <Route element={<AppShell />}>
-            <Route element={<DashboardPage />} index />
-            <Route element={<MessagesPage />} path="messages" />
-            <Route element={<SourcesPage />} path="sources" />
-            <Route element={<CategoriesPage />} path="categories" />
-            <Route element={<RulesPage />} path="rules" />
-            <Route element={<AutomationsPage />} path="automations" />
-            <Route element={<SendPage />} path="send" />
-            <Route element={<AccountsPage />} path="accounts" />
-            <Route element={<UsersPage />} path="users" />
-            <Route element={<ReportsPage />} path="reports" />
-            <Route element={<AuditPage />} path="audit" />
-            <Route element={<SettingsPage />} path="settings" />
-            <Route element={<Navigate replace to="/" />} path="dashboard" />
-            <Route element={<NotFoundPage />} path="*" />
-          </Route>
-        </Routes>
-      </Suspense>
+      <AppStateProvider>
+        <Suspense
+          fallback={
+            <div className="route-loader">
+              <span />
+              <strong>Ładowanie modułu...</strong>
+            </div>
+          }
+        >
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route element={<DashboardPage />} index />
+              <Route element={<MessagesPage />} path="messages" />
+              <Route element={<SourcesPage />} path="sources" />
+              <Route element={<CategoriesPage />} path="categories" />
+              <Route element={<RulesPage />} path="rules" />
+              <Route element={<AutomationsPage />} path="automations" />
+              <Route element={<SendPage />} path="send" />
+              <Route element={<AccountsPage />} path="accounts" />
+              <Route element={<UsersPage />} path="users" />
+              <Route element={<ReportsPage />} path="reports" />
+              <Route element={<AuditPage />} path="audit" />
+              <Route element={<DevelopersPage />} path="developers" />
+              <Route element={<SettingsPage />} path="settings" />
+              <Route element={<Navigate replace to="/" />} path="dashboard" />
+              <Route element={<NotFoundPage />} path="*" />
+            </Route>
+          </Routes>
+        </Suspense>
+      </AppStateProvider>
     </AuthGate>
   );
 }

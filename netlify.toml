@@ -18,9 +18,25 @@
 [functions."pipeline-worker"]
   schedule = "* * * * *"
 
+[functions."scrape-dispatcher"]
+  schedule = "*/5 * * * *"
+
+[functions."maintenance-worker"]
+  schedule = "15 2 * * *"
+
+[[redirects]]
+  from = "/hooks/:source_id"
+  to = "/.netlify/functions/source-webhook/:source_id"
+  status = 200
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/admin-api/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/v1/*"
+  to = "/.netlify/functions/public-api/:splat"
   status = 200
 
 [[redirects]]

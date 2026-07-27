@@ -72,6 +72,14 @@ const { error: profileError } = await supabase.from("profiles").upsert({
 });
 if (profileError) throw profileError;
 
+const { data: ownerRole, error: ownerRoleError } = await supabase
+  .from("organization_roles")
+  .select("id")
+  .eq("organization_id", organization.id)
+  .eq("key", "owner")
+  .single();
+if (ownerRoleError) throw ownerRoleError;
+
 const { error: membershipError } = await supabase
   .from("organization_members")
   .upsert(
@@ -79,6 +87,7 @@ const { error: membershipError } = await supabase
       organization_id: organization.id,
       user_id: user.id,
       role: "owner",
+      role_id: ownerRole.id,
       status: "active",
       joined_at: new Date().toISOString(),
     },

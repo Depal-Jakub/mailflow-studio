@@ -78,19 +78,38 @@ const refreshGoogleToken = async (credentials) => {
 
 const fetchGmail = async (connector, credentials, limit) => {
   const token = await refreshGoogleToken(credentials);
+  let cursor = null;
+  try {
+    cursor = connector.sync_cursor
+      ? JSON.parse(connector.sync_cursor)
+      : null;
+  } catch {
+    cursor = null;
+  }
   const lookbackDays = safeInteger(
     connector.public_config?.initial_lookback_days,
     30,
     1,
     3650,
   );
-  const since = connector.last_sync_at
-    ? Math.floor((new Date(connector.last_sync_at).getTime() - 3_600_000) / 1000)
-    : Math.floor((Date.now() - lookbackDays * 86_400_000) / 1000);
+  const since =
+    cursor?.type === "gmail" && cursor.since
+      ? Number(cursor.since)
+      : connector.last_sync_at
+        ? Math.floor(
+            (new Date(connector.last_sync_at).getTime() - 3_600_000) / 1000,
+          )
+        : Math.floor((Date.now() - lookbackDays * 86_400_000) / 1000);
   const query = new URLSearchParams({
     maxResults: String(Math.min(limit, 100)),
     q: `after:${since}`,
   });
+  if (cursor?.type === "gmail" && cursor.pageToken) {
+    query.set("pageToken", cursor.pageToken);
+  }
+  for (const label of connector.folders ?? []) {
+    if (label) query.append("labelIds", label);
+  }
   const listResponse = await fetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages?${query}`,
     {
@@ -103,8 +122,7 @@ const fetchGmail = async (connector, credentials, limit) => {
     throw new Error(`Gmail list failed: ${listPayload.error?.message ?? listResponse.status}`);
   }
 
-  const results = [];
-  for (const item of (listPayload.messages ?? []).slice(0, limit)) {
+  const fetchOne = async (item) => {
     const messageResponse = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=raw`,
       {
@@ -123,16 +141,30 @@ const fetchGmail = async (connector, credentials, limit) => {
       "base64",
     );
     const mail = await simpleParser(raw, { skipImageLinks: true });
+    return parsedMessage(
+      mail,
+      item.id,
+      messagePayload.threadId,
+      new Date(Number(messagePayload.internalDate)),
+    );
+  };
+  const items = (listPayload.messages ?? []).slice(0, limit);
+  const results = [];
+  for (let index = 0; index < items.length; index += 10) {
     results.push(
-      parsedMessage(
-        mail,
-        item.id,
-        messagePayload.threadId,
-        new Date(Number(messagePayload.internalDate)),
-      ),
+      ...(await Promise.all(items.slice(index, index + 10).map(fetchOne))),
     );
   }
-  return results;
+  return {
+    messages: results,
+    nextCursor: listPayload.nextPageToken
+      ? JSON.stringify({
+          type: "gmail",
+          since,
+          pageToken: listPayload.nextPageToken,
+        })
+      : null,
+  };
 };
 
 const fetchImap = async (connector, credentials, limit) => {
@@ -204,7 +236,7 @@ const fetchImap = async (connector, credentials, limit) => {
   } finally {
     await client.logout().catch(() => undefined);
   }
-  return results;
+  return { messages: results, nextCursor: null };
 };
 
 const refreshMicrosoftToken = async (credentials) => {
@@ -238,6 +270,14 @@ const refreshMicrosoftToken = async (credentials) => {
 
 const fetchOutlook = async (connector, credentials, limit) => {
   const token = await refreshMicrosoftToken(credentials);
+  let cursor = null;
+  try {
+    cursor = connector.sync_cursor
+      ? JSON.parse(connector.sync_cursor)
+      : null;
+  } catch {
+    cursor = null;
+  }
   const lookbackDays = safeInteger(
     connector.public_config?.initial_lookback_days,
     30,
@@ -254,8 +294,22 @@ const fetchOutlook = async (connector, credentials, limit) => {
     $select:
       "id,conversationId,subject,body,bodyPreview,from,toRecipients,receivedDateTime,internetMessageHeaders,hasAttachments",
   });
+  const mailbox = String(connector.public_config?.shared_mailbox ?? "").trim();
+  const graphOwner = mailbox
+    ? `users/${encodeURIComponent(mailbox)}`
+    : "me";
+  const folder = String(connector.folders?.[0] ?? "inbox").trim() || "inbox";
+  const firstUrl =
+    `https://graph.microsoft.com/v1.0/${graphOwner}/mailFolders/` +
+    `${encodeURIComponent(folder)}/messages?${query}`;
+  const cursorUrl = String(cursor?.nextLink ?? "");
+  const requestUrl =
+    cursor?.type === "outlook" &&
+    cursorUrl.startsWith("https://graph.microsoft.com/v1.0/")
+      ? cursorUrl
+      : firstUrl;
   const result = await fetch(
-    `https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?${query}`,
+    requestUrl,
     {
       headers: {
         authorization: `Bearer ${token}`,
@@ -268,29 +322,37 @@ const fetchOutlook = async (connector, credentials, limit) => {
   if (!result.ok) {
     throw new Error(`Microsoft Graph failed: ${payload.error?.message ?? result.status}`);
   }
-  return (payload.value ?? []).map((message) => ({
-    externalId: message.id,
-    threadId: message.conversationId,
-    senderEmail:
-      message.from?.emailAddress?.address?.toLowerCase() ??
-      "unknown@example.invalid",
-    senderName: message.from?.emailAddress?.name ?? null,
-    recipients: (message.toRecipients ?? []).map((recipient) => ({
-      email: recipient.emailAddress?.address?.toLowerCase(),
-      name: recipient.emailAddress?.name || undefined,
+  return {
+    messages: (payload.value ?? []).map((message) => ({
+      externalId: message.id,
+      threadId: message.conversationId,
+      senderEmail:
+        message.from?.emailAddress?.address?.toLowerCase() ??
+        "unknown@example.invalid",
+      senderName: message.from?.emailAddress?.name ?? null,
+      recipients: (message.toRecipients ?? []).map((recipient) => ({
+        email: recipient.emailAddress?.address?.toLowerCase(),
+        name: recipient.emailAddress?.name || undefined,
+      })),
+      subject: message.subject ?? "",
+      preview: message.bodyPreview ?? "",
+      bodyText: null,
+      bodyHtml: message.body?.content ?? null,
+      receivedAt: message.receivedDateTime,
+      headers: Object.fromEntries(
+        (message.internetMessageHeaders ?? [])
+          .slice(0, 100)
+          .map((header) => [header.name, String(header.value).slice(0, 2000)]),
+      ),
+      attachments: [],
     })),
-    subject: message.subject ?? "",
-    preview: message.bodyPreview ?? "",
-    bodyText: null,
-    bodyHtml: message.body?.content ?? null,
-    receivedAt: message.receivedDateTime,
-    headers: Object.fromEntries(
-      (message.internetMessageHeaders ?? [])
-        .slice(0, 100)
-        .map((header) => [header.name, String(header.value).slice(0, 2000)]),
-    ),
-    attachments: [],
-  }));
+    nextCursor: payload["@odata.nextLink"]
+      ? JSON.stringify({
+          type: "outlook",
+          nextLink: payload["@odata.nextLink"],
+        })
+      : null,
+  };
 };
 
 const insertMessage = async (service, connector, message) => {
@@ -364,12 +426,13 @@ const syncConnector = async (service, connector) => {
       1,
       100,
     );
-    const fetched =
+    const fetchedResult =
       connector.type === "gmail"
         ? await fetchGmail(connector, credentials, limit)
         : connector.type === "outlook"
           ? await fetchOutlook(connector, credentials, limit)
           : await fetchImap(connector, credentials, limit);
+    const fetched = fetchedResult.messages;
     let inserted = 0;
     let duplicates = 0;
     let errors = 0;
@@ -386,7 +449,10 @@ const syncConnector = async (service, connector) => {
 
     const completedAt = new Date();
     const nextSyncAt = new Date(
-      completedAt.getTime() + connector.sync_interval_minutes * 60_000,
+      completedAt.getTime() +
+        (fetchedResult.nextCursor
+          ? 10_000
+          : connector.sync_interval_minutes * 60_000),
     );
     await service
       .from("connector_sync_runs")
@@ -397,18 +463,28 @@ const syncConnector = async (service, connector) => {
         inserted_count: inserted,
         duplicate_count: duplicates,
         error_count: errors,
+        cursor_after: fetchedResult.nextCursor,
       })
       .eq("id", run.id);
     await service
       .from("source_connectors")
       .update({
         status: errors > 0 ? "warning" : "active",
-        last_sync_at: completedAt.toISOString(),
+        last_sync_at: fetchedResult.nextCursor
+          ? connector.last_sync_at
+          : completedAt.toISOString(),
         next_sync_at: nextSyncAt.toISOString(),
+        sync_cursor: fetchedResult.nextCursor,
         last_error: errors > 0 ? `${errors} messages could not be inserted` : null,
       })
       .eq("id", connector.id);
-    return { connectorId: connector.id, inserted, duplicates, errors };
+    return {
+      connectorId: connector.id,
+      inserted,
+      duplicates,
+      errors,
+      backlog: Boolean(fetchedResult.nextCursor),
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await service
@@ -432,6 +508,60 @@ const syncConnector = async (service, connector) => {
   }
 };
 
+const queueScraper = async (service, connector) => {
+  const url = String(connector.public_config?.url ?? connector.address ?? "");
+  if (!url) {
+    await service
+      .from("source_connectors")
+      .update({
+        status: "error",
+        last_error: "Scraper nie ma skonfigurowanego adresu URL.",
+        next_sync_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+      })
+      .eq("id", connector.id);
+    return { connectorId: connector.id, error: "Missing scraper URL" };
+  }
+  const { data: pending, error: pendingError } = await service
+    .from("scrape_jobs")
+    .select("id")
+    .eq("source_connector_id", connector.id)
+    .in("status", ["pending", "processing"])
+    .limit(1);
+  if (pendingError) throw pendingError;
+
+  if (!pending?.length) {
+    const { error: insertError } = await service.from("scrape_jobs").insert({
+      organization_id: connector.organization_id,
+      source_connector_id: connector.id,
+      url,
+      status: "pending",
+      priority: 50,
+      scheduled_at: new Date().toISOString(),
+      metadata: {
+        trigger: "connector_schedule",
+        extraction_mode: connector.public_config?.extraction_mode ?? "content",
+      },
+    });
+    if (insertError) throw insertError;
+  }
+  const nextSyncAt = new Date(
+    Date.now() + connector.sync_interval_minutes * 60_000,
+  );
+  await service
+    .from("source_connectors")
+    .update({
+      status: "active",
+      next_sync_at: nextSyncAt.toISOString(),
+      last_error: null,
+    })
+    .eq("id", connector.id);
+  return {
+    connectorId: connector.id,
+    queued: pending?.length ? 0 : 1,
+    existing: pending?.length ?? 0,
+  };
+};
+
 export const handler = async (event) => {
   try {
     authorize(event);
@@ -445,7 +575,7 @@ export const handler = async (event) => {
     const { data: connectors, error } = await service
       .from("source_connectors")
       .select("*")
-      .in("type", ["gmail", "outlook", "imap"])
+      .in("type", ["gmail", "outlook", "imap", "scraper"])
       .in("status", ["active", "warning"])
       .or(`next_sync_at.is.null,next_sync_at.lte.${new Date().toISOString()}`)
       .order("next_sync_at", { ascending: true, nullsFirst: true })
@@ -454,7 +584,11 @@ export const handler = async (event) => {
 
     const results = [];
     for (const connector of connectors ?? []) {
-      results.push(await syncConnector(service, connector));
+      results.push(
+        connector.type === "scraper"
+          ? await queueScraper(service, connector)
+          : await syncConnector(service, connector),
+      );
     }
     return response(200, {
       ok: true,

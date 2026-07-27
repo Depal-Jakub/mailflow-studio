@@ -2,6 +2,7 @@ import {
   adminClient,
   assertInternalRequest,
   boundedInteger,
+  compactText,
   hmacHex,
   jsonResponse,
 } from "../_shared/runtime.ts";
@@ -149,6 +150,114 @@ async function sendWebhook(
   return { status: response.status, url: url.origin };
 }
 
+async function createWorkflowTask(
+  supabase: ReturnType<typeof adminClient>,
+  job: Record<string, unknown>,
+  message: Record<string, unknown> | null,
+) {
+  const config =
+    job.action_config &&
+    typeof job.action_config === "object" &&
+    !Array.isArray(job.action_config)
+      ? (job.action_config as Record<string, unknown>)
+      : {};
+  const title = compactText(
+    config.title ?? message?.subject ?? "Zadanie MailFlow",
+    300,
+  ).trim();
+  if (!title) throw new Error("Task title is required");
+  let dueAt: string | null = null;
+  if (config.due_at) {
+    const timestamp = Date.parse(String(config.due_at));
+    if (!Number.isFinite(timestamp)) throw new Error("Invalid task due_at");
+    dueAt = new Date(timestamp).toISOString();
+  } else if (config.due_in_minutes) {
+    const minutes = boundedInteger(config.due_in_minutes, 60, 1, 525600);
+    dueAt = new Date(Date.now() + minutes * 60_000).toISOString();
+  }
+  const { data, error } = await supabase
+    .from("workflow_tasks")
+    .insert({
+      organization_id: job.organization_id,
+      message_id: job.message_id ?? null,
+      automation_id: config.automation_id ?? null,
+      action_job_id: job.id,
+      assignee_id: config.assignee_id ?? null,
+      title,
+      description: compactText(config.description ?? message?.preview, 10_000) || null,
+      priority: boundedInteger(config.priority, 50, 0, 1000),
+      due_at: dueAt,
+      metadata:
+        config.metadata &&
+        typeof config.metadata === "object" &&
+        !Array.isArray(config.metadata)
+          ? config.metadata
+          : {},
+    })
+    .select("id,title,status,assignee_id,due_at")
+    .single();
+  if (error) throw error;
+  return { workflow_task: data };
+}
+
+async function notifyTeam(
+  supabase: ReturnType<typeof adminClient>,
+  job: Record<string, unknown>,
+  message: Record<string, unknown> | null,
+) {
+  const config =
+    job.action_config &&
+    typeof job.action_config === "object" &&
+    !Array.isArray(job.action_config)
+      ? (job.action_config as Record<string, unknown>)
+      : {};
+  const roles = Array.isArray(config.roles)
+    ? config.roles.map(String).filter(Boolean)
+    : [];
+  let membershipQuery = supabase
+    .from("organization_members")
+    .select("user_id,role")
+    .eq("organization_id", job.organization_id)
+    .eq("status", "active");
+  if (roles.length > 0) membershipQuery = membershipQuery.in("role", roles);
+  const { data: memberships, error: membershipError } = await membershipQuery;
+  if (membershipError) throw membershipError;
+  const title = compactText(
+    config.title ?? message?.subject ?? "Powiadomienie MailFlow",
+    300,
+  ).trim();
+  if (!title) throw new Error("Notification title is required");
+  const rows = (memberships ?? []).map((membership) => ({
+    organization_id: job.organization_id,
+    user_id: membership.user_id,
+    message_id: job.message_id ?? null,
+    automation_id: config.automation_id ?? null,
+    action_job_id: job.id,
+    title,
+    body: compactText(config.body ?? message?.preview, 5000) || null,
+    link: compactText(
+      config.link ??
+        (job.message_id ? `/messages?message=${job.message_id}` : ""),
+      1000,
+    ) || null,
+    severity: ["info", "success", "warning", "error"].includes(
+      String(config.severity),
+    )
+      ? String(config.severity)
+      : "info",
+    metadata:
+      config.metadata &&
+      typeof config.metadata === "object" &&
+      !Array.isArray(config.metadata)
+        ? config.metadata
+        : {},
+  }));
+  if (rows.length === 0) return { notifications_created: 0 };
+  const { error } = await supabase.from("user_notifications").insert(rows);
+  if (error) throw error;
+  return { notifications_created: rows.length, roles };
+}
+
 async function failOrRetry(
   supabase: ReturnType<typeof adminClient>,
   job: Record<string, unknown>,
@@ -194,9 +303,10 @@ Deno.serve(async (request) => {
     );
     if (claimError) throw claimError;
 
+    const claimedJobs = (jobs ?? []) as Record<string, unknown>[];
     const messageIds = [
       ...new Set(
-        (jobs ?? [])
+        claimedJobs
           .map((job) => job.message_id)
           .filter((id): id is string => typeof id === "string"),
       ),
@@ -216,7 +326,7 @@ Deno.serve(async (request) => {
     }
 
     const results: Record<string, unknown>[] = [];
-    for (const job of jobs ?? []) {
+    for (const job of claimedJobs) {
       try {
         const message = job.message_id
           ? messagesById.get(String(job.message_id)) ?? null
@@ -229,14 +339,10 @@ Deno.serve(async (request) => {
           job.action_type === "send_email"
         ) {
           result = await queueForward(supabase, job, message);
-        } else if (
-          job.action_type === "create_task" ||
-          job.action_type === "notify_team"
-        ) {
-          result = {
-            queued_for_integration: true,
-            config: job.action_config,
-          };
+        } else if (job.action_type === "create_task") {
+          result = await createWorkflowTask(supabase, job, message);
+        } else if (job.action_type === "notify_team") {
+          result = await notifyTeam(supabase, job, message);
         } else {
           throw new Error(`Unsupported action type: ${job.action_type}`);
         }
@@ -266,7 +372,7 @@ Deno.serve(async (request) => {
 
     return jsonResponse(200, {
       ok: true,
-      claimed: (jobs ?? []).length,
+      claimed: claimedJobs.length,
       completed: results.filter((result) => result.status === "complete").length,
       results,
     });

@@ -25,7 +25,8 @@ Regex ma limit 500 znaków. Treść testowana regexem jest ograniczona do 250 kB
 - `scrape_urls` - bezpieczna kolejka adresów znalezionych w treści;
 - `forward_smtp` - kolejka przekazania na wskazany adres;
 - `send_webhook` - podpisany webhook;
-- `create_task` - zadanie dla adaptera integracyjnego;
+- `create_task` - rzeczywiste zadanie w `workflow_tasks`;
+- `notify_team` - powiadomienia członków organizacji, opcjonalnie wg roli;
 - `stop_processing` - zatrzymanie niższych reguł.
 
 ## Przykład
@@ -44,3 +45,19 @@ Regex ma limit 500 znaków. Treść testowana regexem jest ograniczona do 250 kB
   ]
 }
 ```
+
+## Kroki automatyzacji
+
+Automatyzacje korzystają z obiektów `{"type": "...", "config": {...}}`.
+Obsługiwane kroki:
+
+- `set_category`, `set_score`, `add_score`, `add_tag`, `set_review`, `archive`;
+- `send_webhook`, `forward_smtp`, `send_email`;
+- `create_task`, `notify_team`;
+- `delay` z `seconds` lub `minutes`;
+- `stop`.
+
+W tekstach konfiguracji można użyć zmiennych, np.
+`{{message.subject}}`, `{{message.sender_email}}` oraz `{{input.case_id}}`.
+Worker zapisuje wynik każdego kroku, po błędzie próbuje maksymalnie trzy razy
+z backoffem, a `delay` zwalnia claim i wraca do kolejnego kroku po `resume_at`.
